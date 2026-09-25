@@ -29,4 +29,49 @@ GNNs have wide applications in drug discovery, social network analysis, and know
     const log = await vault.readLog();
     expect(log).toContain('INGEST');
   });
+
+  it('unwraps phantom hallucinated links and ensures clean Related Topics in cleanAndEnhanceNote', () => {
+    const rawNote = `
+CPE
+Executive Summary: Carbapenem-susceptible organisms (CPE) are characterized by limitations in isolation detection.
+Core Mechanisms & Insights
+Key Characteristics: Isolation limitations exist for [[selective media]] and [[specificity]] during testing.
+Implications: Enriches [[Antibiotics]] data.
+Related Topics & Index
+[[Isolation]]
+[[carbapenemase]]
+[[CPE detection]]
+[[selective media]]
+[[specificity]]
+[[sensitivity]]
+[[INDEX]]
+`;
+
+    const knownPages = ['Antibiotics.md'];
+    const siblingTopics = ['CPE', 'Carbapenem Resistance'];
+
+    const cleaned = ingestionPipeline.cleanAndEnhanceNote(
+      rawNote,
+      'CPE',
+      knownPages,
+      siblingTopics
+    );
+
+    // Header must be normalized to # CPE
+    expect(cleaned).toMatch(/^# CPE\b/);
+
+    // Phantom links like [[selective media]], [[specificity]], [[Isolation]], [[sensitivity]] must be stripped
+    expect(cleaned).not.toContain('[[selective media]]');
+    expect(cleaned).not.toContain('[[specificity]]');
+    expect(cleaned).not.toContain('[[sensitivity]]');
+    expect(cleaned).not.toContain('[[Isolation]]');
+
+    // Real known page must be linked
+    expect(cleaned).toContain('[[Antibiotics]]');
+
+    // Related Topics must contain sibling topic and INDEX
+    expect(cleaned).toContain('## Related Topics & Index');
+    expect(cleaned).toContain('[[Carbapenem Resistance]]');
+    expect(cleaned).toContain('[[INDEX]]');
+  });
 });

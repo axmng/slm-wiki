@@ -430,6 +430,11 @@ STRICT RULES:
 ## Related Topics & Index
 - [[INDEX]]
 
+STRICT FORMAT RULES:
+- Use exact Markdown headers (# ${req.topic} for the note title, ## for sections).
+- Under "## Related Topics & Index", ONLY include "- [[INDEX]]". DO NOT invent other [[wikilinks]].
+- Do NOT wrap arbitrary domain words in [[...]] brackets unless they are already established note titles.
+
 Output only the Markdown text with no conversational preamble:`;
 
           try {

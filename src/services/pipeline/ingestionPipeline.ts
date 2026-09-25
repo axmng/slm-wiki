@@ -185,8 +185,14 @@ export class IngestionPipeline {
           existingPage ? existingPage.content : undefined
         );
 
-        // Deterministic wikilink cross-referencing
-        const enhancedContent = this.linkifyReferences(newNoteContent, canonicalTopicName, allKnownPageNames);
+        // Clean, harmonize, and deterministically link note
+        const siblingNames = allTopics.map((t) => t.name);
+        const enhancedContent = this.cleanAndEnhanceNote(
+          newNoteContent,
+          canonicalTopicName,
+          allKnownPageNames,
+          siblingNames
+        );
 
         const savedPage = await vault.savePage(canonicalTopicName, enhancedContent);
         if (!updatedPages.includes(savedPage.filename)) {
@@ -260,6 +266,91 @@ export class IngestionPipeline {
       });
       throw err;
     }
+  }
+
+  /**
+   * Sanitizes SLM note output:
+   * 1. Guarantees top-level Markdown title `# Title`.
+   * 2. Strips hallucinated/phantom [[wikilinks]] to non-existent terms (unwrapping to plain text).
+   * 3. Retains genuine links to known pages, sibling topics, and [[INDEX]].
+   * 4. Deterministically builds the ## Related Topics & Index footer.
+   * 5. Performs cross-referencing linkification for all known vault pages.
+   */
+  public cleanAndEnhanceNote(
+    rawContent: string,
+    canonicalTopicName: string,
+    allKnownPageNames: string[],
+    siblingTopics: string[]
+  ): string {
+    let content = rawContent.trim();
+
+    // 1. Ensure clean level-1 markdown title
+    if (!content.startsWith('# ')) {
+      const firstLineEnd = content.indexOf('\n');
+      const firstLine = firstLineEnd !== -1 ? content.slice(0, firstLineEnd).trim() : content;
+      if (firstLine.toLowerCase() === canonicalTopicName.toLowerCase()) {
+        content = `# ${canonicalTopicName}\n` + (firstLineEnd !== -1 ? content.slice(firstLineEnd) : '');
+      } else {
+        content = `# ${canonicalTopicName}\n\n` + content;
+      }
+    }
+
+    // 2. Strip any hallucinated/uncontrolled Related Topics & Index section
+    const relatedSectionRegex = /(?:^|\n)(?:#{1,3}\s*)?Related Topics.*$/is;
+    const bodyContent = content.replace(relatedSectionRegex, '').trim();
+
+    // 3. Create set of valid targets (existing vault pages + sibling topics + INDEX + LOG)
+    const validTargets = new Set<string>();
+    validTargets.add('index');
+    validTargets.add('log');
+    for (const p of allKnownPageNames) {
+      validTargets.add(p.replace(/\.md$/i, '').toLowerCase().trim());
+    }
+    for (const s of siblingTopics) {
+      validTargets.add(s.replace(/\.md$/i, '').toLowerCase().trim());
+    }
+
+    // 4. Unwrap phantom wikilinks in body text that don't match any valid target
+    let cleanedBody = bodyContent.replace(/\[\[(.*?)\]\]/g, (fullMatch, linkText) => {
+      const parts = linkText.split('|');
+      const target = parts[0].trim();
+      const alias = parts[1] ? parts[1].trim() : target;
+
+      let isKnown = validTargets.has(target.toLowerCase());
+      if (!isKnown) {
+        for (const vt of validTargets) {
+          if (areTopicsEquivalent(vt, target)) {
+            isKnown = true;
+            break;
+          }
+        }
+      }
+
+      if (isKnown) {
+        return fullMatch;
+      } else {
+        // Hallucinated dead link (e.g. [[selective media]]) -> unwrap to plain text
+        return alias;
+      }
+    });
+
+    // 5. Deterministic wikilink cross-referencing for known pages
+    cleanedBody = this.linkifyReferences(cleanedBody, canonicalTopicName, allKnownPageNames);
+
+    // 6. Synthesize clean, deterministic Related Topics & Index footer
+    let relatedSection = `\n\n## Related Topics & Index\n\n`;
+    const distinctSiblings = siblingTopics.filter(
+      (s) => !areTopicsEquivalent(s, canonicalTopicName)
+    );
+
+    if (distinctSiblings.length > 0) {
+      for (const sib of distinctSiblings) {
+        relatedSection += `- [[${sib}]]\n`;
+      }
+    }
+    relatedSection += `- Master Table of Contents: [[INDEX]]\n`;
+
+    return cleanedBody + relatedSection;
   }
 
   /**

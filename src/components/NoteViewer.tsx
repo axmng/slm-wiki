@@ -10,6 +10,7 @@ import {
   Folder,
   FileCode,
   Archive,
+  AlertCircle,
 } from 'lucide-react';
 import { vault } from '../services/vault/vaultService';
 import { WikiPage } from '../services/vault/types';
@@ -28,10 +29,19 @@ export const NoteViewer: React.FC<NoteViewerProps> = ({ initialPage, currentWiki
   const [filterQuery, setFilterQuery] = useState('');
   
   const [currentPage, setCurrentPage] = useState<WikiPage | null>(null);
+  const [isCurrentPageStub, setIsCurrentPageStub] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [isSavedNotice, setIsSavedNotice] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Check if a wikilink target exists as a real page in the vault
+  const isPageExisting = (pageTitle: string): boolean => {
+    const clean = pageTitle.split('|')[0].trim().toLowerCase();
+    if (clean === 'index' || clean === 'log') return true;
+    if (clean.startsWith('raw/')) return true;
+    return pages.some((p) => p.toLowerCase() === clean);
+  };
 
   // Load list of pages and raw files
   const refreshList = async () => {
@@ -59,6 +69,7 @@ export const NoteViewer: React.FC<NoteViewerProps> = ({ initialPage, currentWiki
       setIsEditing(false);
 
       if (selectedTopic === 'INDEX') {
+        setIsCurrentPageStub(false);
         const index = await vault.readIndex();
         const md = vault.serializeIndexMarkdown(index);
         setCurrentPage({
@@ -69,6 +80,7 @@ export const NoteViewer: React.FC<NoteViewerProps> = ({ initialPage, currentWiki
         });
         setEditContent(md);
       } else if (selectedTopic === 'LOG') {
+        setIsCurrentPageStub(false);
         const log = await vault.readLog();
         setCurrentPage({
           title: 'LOG',
@@ -78,6 +90,7 @@ export const NoteViewer: React.FC<NoteViewerProps> = ({ initialPage, currentWiki
         });
         setEditContent(log);
       } else if (selectedTopic.startsWith('raw/')) {
+        setIsCurrentPageStub(false);
         const rawFilename = selectedTopic.replace('raw/', '');
         const content = await vault.readRaw(rawFilename);
         setCurrentPage({
@@ -90,24 +103,26 @@ export const NoteViewer: React.FC<NoteViewerProps> = ({ initialPage, currentWiki
       } else {
         const page = await vault.readPage(selectedTopic);
         if (page) {
+          setIsCurrentPageStub(false);
           setCurrentPage(page);
           setEditContent(page.content);
         } else {
           // If page not found yet, create default stub
+          setIsCurrentPageStub(true);
           setCurrentPage({
             title: selectedTopic,
             filename: `${selectedTopic}.md`,
-            content: `# ${selectedTopic}\n\n*New note stub. Click Edit to add details.*`,
+            content: `# ${selectedTopic}\n\n*This note has not been ingested or written yet.*`,
             outgoingLinks: [],
           });
-          setEditContent(`# ${selectedTopic}\n\n*New note stub. Click Edit to add details.*`);
+          setEditContent(`# ${selectedTopic}\n\n*This note has not been ingested or written yet.*`);
         }
       }
       setIsLoading(false);
     };
 
     loadContent();
-  }, [selectedTopic]);
+  }, [selectedTopic, pages]);
 
   const handleSave = async () => {
     if (!currentPage) return;
@@ -124,6 +139,7 @@ export const NoteViewer: React.FC<NoteViewerProps> = ({ initialPage, currentWiki
       await vault.appendToLog('MANUAL_EDIT', `User edited note [[${selectedTopic}]].`);
     }
 
+    setIsCurrentPageStub(false);
     setCurrentPage({
       ...currentPage,
       content: editContent,
@@ -142,10 +158,17 @@ export const NoteViewer: React.FC<NoteViewerProps> = ({ initialPage, currentWiki
   };
 
   const renderMarkdown = (text: string) => {
-    const preprocessed = text.replace(
-      /\[\[(.*?)\]\]/g,
-      `<a href="#" data-wikilink="$1" class="text-indigo-400 hover:text-indigo-300 font-medium underline underline-offset-2 cursor-pointer">[[$1]]</a>`
-    );
+    const preprocessed = text.replace(/\[\[(.*?)\]\]/g, (_fullMatch, inner) => {
+      const parts = inner.split('|');
+      const target = parts[0].trim();
+      const exists = isPageExisting(target);
+
+      if (exists) {
+        return `<a href="#" data-wikilink="${inner}" class="text-indigo-400 hover:text-indigo-300 font-medium underline underline-offset-2 cursor-pointer">[[$1]]</a>`;
+      } else {
+        return `<a href="#" data-wikilink="${inner}" title="Uncreated note stub: [[${target}]] (click to open)" class="text-slate-400 hover:text-amber-300 border-b border-dashed border-slate-500 hover:border-amber-400 cursor-pointer opacity-80">[[$1]] <span class="text-[9px] text-amber-500/90 no-underline font-mono">?</span></a>`;
+      }
+    });
     return { __html: marked.parse(preprocessed) as string };
   };
 
@@ -330,15 +353,27 @@ export const NoteViewer: React.FC<NoteViewerProps> = ({ initialPage, currentWiki
             <span className="text-slate-500 flex items-center gap-1 shrink-0">
               <Link2 className="w-3.5 h-3.5 text-indigo-400" /> Links ({currentPage.outgoingLinks.length}):
             </span>
-            {currentPage.outgoingLinks.map((link, idx) => (
-              <button
-                key={idx}
-                onClick={() => handleNavigate(link)}
-                className="shrink-0 text-indigo-300 bg-indigo-950/60 hover:bg-indigo-900 border border-indigo-800/80 px-2 py-0.5 rounded text-[11px] font-mono transition-colors"
-              >
-                [[{link}]]
-              </button>
-            ))}
+            {currentPage.outgoingLinks.map((link, idx) => {
+              const exists = isPageExisting(link);
+              return exists ? (
+                <button
+                  key={idx}
+                  onClick={() => handleNavigate(link)}
+                  className="shrink-0 text-indigo-300 bg-indigo-950/60 hover:bg-indigo-900 border border-indigo-800/80 px-2 py-0.5 rounded text-[11px] font-mono transition-colors"
+                >
+                  [[{link}]]
+                </button>
+              ) : (
+                <button
+                  key={idx}
+                  onClick={() => handleNavigate(link)}
+                  className="shrink-0 text-slate-400 bg-slate-900/60 hover:bg-slate-800 border border-dashed border-slate-700 px-2 py-0.5 rounded text-[11px] font-mono transition-colors flex items-center gap-1 opacity-80 hover:opacity-100"
+                  title="Uncreated note stub (click to create)"
+                >
+                  [[{link}]] <span className="text-[9px] text-amber-500 font-sans font-semibold">uncreated</span>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -355,11 +390,25 @@ export const NoteViewer: React.FC<NoteViewerProps> = ({ initialPage, currentWiki
               className="w-full h-full bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm font-mono text-slate-100 focus:outline-none focus:border-indigo-500 leading-relaxed resize-none"
             />
           ) : (
-            <div
-              onClick={handleContentClick}
-              className="prose prose-invert max-w-none text-slate-200 text-sm leading-relaxed"
-              dangerouslySetInnerHTML={renderMarkdown(currentPage?.content || '')}
-            />
+            <div>
+              {isCurrentPageStub && (
+                <div className="bg-amber-950/20 border border-amber-800/40 rounded-xl p-4 mb-5 flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="text-amber-300 text-xs font-bold uppercase tracking-wider">Uncreated Note Stub</div>
+                    <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                      This note was referenced as a link in your vault, but has not been ingested or written yet.
+                      You can ingest reference documents mentioning <strong>{selectedTopic}</strong> to populate it, or click <strong>Edit Markdown</strong> to write notes manually.
+                    </p>
+                  </div>
+                </div>
+              )}
+              <div
+                onClick={handleContentClick}
+                className="prose prose-invert max-w-none text-slate-200 text-sm leading-relaxed"
+                dangerouslySetInnerHTML={renderMarkdown(currentPage?.content || '')}
+              />
+            </div>
           )}
         </div>
       </div>
