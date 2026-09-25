@@ -6,7 +6,7 @@ import { marked } from 'marked';
 interface QueryPaneProps {
   onOpenPage: (pageName: string) => void;
   engine?: string;
-  modelId?: string;
+  modelName?: string;
   onSwitchToWebGPU?: () => void;
 }
 
@@ -20,7 +20,7 @@ const SAMPLE_QUESTIONS = [
 export const QueryPane: React.FC<QueryPaneProps> = ({
   onOpenPage,
   engine = 'mock-dev',
-  modelId = 'Qwen2.5-0.5B',
+  modelName = 'Gemma 4',
   onSwitchToWebGPU,
 }) => {
   const [query, setQuery] = useState('');
@@ -103,9 +103,9 @@ export const QueryPane: React.FC<QueryPaneProps> = ({
             <span className="font-medium text-slate-200">
               {engine === 'mock-dev'
                 ? 'Simulated Dev SLM (Heuristic)'
-                : engine === 'ollama'
-                ? 'Local Ollama'
-                : `WebGPU Neural SLM (${modelId.split('-')[0]})`}
+                : engine === 'gemma4-webgpu'
+                ? 'WebGPU: Gemma 4 (Google)'
+                : 'WebGPU: Bonsai 27B (Prism ML 1-Bit)'}
             </span>
           </div>
 
@@ -115,7 +115,7 @@ export const QueryPane: React.FC<QueryPaneProps> = ({
               className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-medium underline underline-offset-2 hover:no-underline transition-colors cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Switch to Real In-Browser WebGPU SLM (~350MB)</span>
+              <span>Load In-Browser WebGPU SLM ({modelName})</span>
             </button>
           )}
         </div>

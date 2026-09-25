@@ -10,8 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mediapipe/tasks-genai": "^0.10.29",
-    "@mlc-ai/web-llm": "^0.2.85",
+    "@huggingface/transformers": "^4.3.0",
     "lucide-react": "^1.47.0",
     "mammoth": "^1.12.3",
     "marked": "^18.0.14",

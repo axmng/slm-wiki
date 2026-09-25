@@ -13,44 +13,40 @@ export interface RoutingResult {
   reasoning: string;
 }
 
-export type ModelEngineType = 'webllm-webgpu' | 'litert-webgpu' | 'mock-dev' | 'ollama';
+export type ModelEngineType = 'gemma4-webgpu' | 'bonsai-webgpu' | 'mock-dev';
 
 export interface ModelPreset {
   id: string;
+  engine: ModelEngineType;
   name: string;
+  shortName: string;
   description: string;
-  vramMB: number;
+  hfUrl: string;
   downloadSizeApprox: string;
+  vramMB: number;
 }
 
-export const WEBLLM_PRESETS: ModelPreset[] = [
+// Strictly the two requested WebGPU models
+export const SUPPORTED_MODELS: ModelPreset[] = [
   {
-    id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
-    name: 'Qwen2.5 0.5B (Fast WebGPU)',
-    description: 'Ultra-lightweight, fast WebGPU inference in browser (~350MB download)',
-    vramMB: 945,
-    downloadSizeApprox: '~350MB',
+    id: 'onnx-community/gemma-4-E2B-it-ONNX',
+    engine: 'gemma4-webgpu',
+    name: 'Gemma 4 (Google WebGPU)',
+    shortName: 'Gemma 4',
+    description: 'In-browser Multimodal AI on WebGPU via Transformers.js (~1.5GB)',
+    hfUrl: 'https://huggingface.co/spaces/webml-community/Gemma-4-WebGPU',
+    downloadSizeApprox: '~1.5GB',
+    vramMB: 2048,
   },
   {
-    id: 'SmolLM2-1.7B-Instruct-q4f16_1-MLC',
-    name: 'SmolLM2 1.7B (High Quality)',
-    description: 'Balanced performance and depth for knowledge synthesis (~1GB download)',
-    vramMB: 1774,
-    downloadSizeApprox: '~1GB',
-  },
-  {
-    id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
-    name: 'Llama 3.2 1B (Meta)',
-    description: 'Compact Meta instruction-tuned SLM (~800MB download)',
-    vramMB: 879,
-    downloadSizeApprox: '~800MB',
-  },
-  {
-    id: 'gemma-2-2b-it-q4f16_1-MLC',
-    name: 'Gemma 2 2B (Google)',
-    description: 'Google Gemma 2 architecture for structured reasoning (~1.4GB download)',
-    vramMB: 1895,
-    downloadSizeApprox: '~1.4GB',
+    id: 'prism-ml/Bonsai-27B-gguf',
+    engine: 'bonsai-webgpu',
+    name: 'Bonsai 27B (Prism ML 1-Bit WebGPU)',
+    shortName: 'Bonsai 27B',
+    description: '27B-parameter dense model quantized to 1-bit precision running on custom WebGPU kernels (~3.8GB)',
+    hfUrl: 'https://huggingface.co/spaces/webml-community/bonsai-webgpu-kernels',
+    downloadSizeApprox: '~3.8GB',
+    vramMB: 4096,
   },
 ];
 
@@ -59,7 +55,6 @@ export interface ModelConfig {
   modelId: string;
   modelUrl?: string;
   contextWindow: number;
-  ollamaEndpoint?: string;
 }
 
 export interface InitProgressEvent {

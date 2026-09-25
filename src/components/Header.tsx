@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { FolderOpen, Cpu, CheckCircle2, BookMarked, Plus, Loader2 } from 'lucide-react';
 import { VaultStats } from '../services/vault/types';
-import { ModelEngineType, WEBLLM_PRESETS, InitProgressEvent } from '../services/ai/aiTypes';
+import { ModelEngineType, SUPPORTED_MODELS, InitProgressEvent } from '../services/ai/aiTypes';
 
 interface HeaderProps {
   stats: VaultStats;
@@ -43,20 +43,16 @@ export const Header: React.FC<HeaderProps> = ({
   const handleEngineChange = (val: string) => {
     if (val === 'mock-dev') {
       onSelectEngine('mock-dev');
-    } else if (val === 'ollama') {
-      onSelectEngine('ollama');
-    } else if (val.startsWith('webllm:')) {
-      const selectedModel = val.replace('webllm:', '');
-      onSelectEngine('webllm-webgpu', selectedModel);
+    } else {
+      const match = SUPPORTED_MODELS.find((m) => m.id === val);
+      if (match) {
+        onSelectEngine(match.engine, match.id);
+      }
     }
   };
 
-  const currentSelectValue =
-    engine === 'mock-dev'
-      ? 'mock-dev'
-      : engine === 'ollama'
-      ? 'ollama'
-      : `webllm:${modelId}`;
+  const currentSelectValue = engine === 'mock-dev' ? 'mock-dev' : modelId;
+  const activeModel = SUPPORTED_MODELS.find((m) => m.id === modelId);
 
   return (
     <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50">
@@ -70,7 +66,11 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-lg text-white tracking-tight">SLM Wiki</h1>
               <span className="text-[11px] px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-400 border border-cyan-800 font-mono">
-                {engine === 'mock-dev' ? 'Simulated Dev SLM' : engine === 'ollama' ? 'Local Ollama' : 'WebGPU SLM'}
+                {engine === 'mock-dev'
+                  ? 'Simulated Dev SLM'
+                  : activeModel
+                  ? activeModel.shortName + ' (WebGPU)'
+                  : 'WebGPU SLM'}
               </span>
             </div>
             
@@ -181,23 +181,18 @@ export const Header: React.FC<HeaderProps> = ({
             <select
               value={currentSelectValue}
               onChange={(e) => handleEngineChange(e.target.value)}
-              className="bg-transparent text-slate-200 focus:outline-none cursor-pointer max-w-[210px] truncate"
+              className="bg-transparent text-slate-200 focus:outline-none cursor-pointer max-w-[230px] truncate"
             >
-              <optgroup label="Simulated Dev Engine">
-                <option value="mock-dev" className="bg-slate-900 text-slate-200">
-                  Simulated Dev SLM (Instant / Heuristic)
-                </option>
-              </optgroup>
-              <optgroup label="In-Browser WebGPU SLMs (MLC WebLLM)">
-                {WEBLLM_PRESETS.map((p) => (
-                  <option key={p.id} value={`webllm:${p.id}`} className="bg-slate-900 text-slate-200">
-                    {p.name}
+              <optgroup label="WebGPU In-Browser Models">
+                {SUPPORTED_MODELS.map((m) => (
+                  <option key={m.id} value={m.id} className="bg-slate-900 text-slate-200">
+                    {m.name} ({m.downloadSizeApprox})
                   </option>
                 ))}
               </optgroup>
-              <optgroup label="Local Server">
-                <option value="ollama" className="bg-slate-900 text-slate-200">
-                  Local Ollama (localhost:11434)
+              <optgroup label="Simulated Dev Engine">
+                <option value="mock-dev" className="bg-slate-900 text-slate-200">
+                  Simulated Dev SLM (Instant / Heuristic)
                 </option>
               </optgroup>
             </select>

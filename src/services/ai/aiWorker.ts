@@ -10,15 +10,18 @@ import {
   mockRouteQuery,
   mockSynthesizeAnswer,
 } from './mockEngine';
-import { MLCEngine } from '@mlc-ai/web-llm';
+import { Bonsai27B, DEFAULT_GGUF_FILE, DEFAULT_MODEL_ID } from './bonsaiRuntime.js';
 
 let currentConfig: ModelConfig = {
   engine: 'mock-dev',
-  modelId: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+  modelId: 'onnx-community/gemma-4-E2B-it-ONNX',
   contextWindow: 4096,
 };
 
-let mlcEngine: MLCEngine | null = null;
+// Model sessions
+let bonsaiSession: any = null;
+let gemmaTokenizer: any = null;
+let gemmaModel: any = null;
 
 // Helper to post typed responses to main thread
 function post(msg: WorkerResponse) {
@@ -26,16 +29,16 @@ function post(msg: WorkerResponse) {
 }
 
 // --------------------------------------------------------------------------
-// WEBGPU ENGINE (MLC WebLLM)
+// 1. GEMMA 4 (ONNX Runtime Web / Transformers.js WebGPU)
 // --------------------------------------------------------------------------
 
-async function initWebLLMEngine(config: ModelConfig, id: string) {
+async function initGemma4(config: ModelConfig, id: string) {
   post({
     type: 'PROGRESS',
     data: {
       stage: 'downloading',
       progress: 5,
-      detail: `Checking WebGPU support and initializing runtime for ${config.modelId}...`,
+      detail: 'Requesting WebGPU device and initializing Gemma 4 runtime...',
     },
     id,
   });
@@ -45,142 +48,209 @@ async function initWebLLMEngine(config: ModelConfig, id: string) {
   }
 
   try {
-    mlcEngine = new MLCEngine();
-    mlcEngine.setInitProgressCallback((report) => {
-      const pct = Math.min(100, Math.max(0, Math.round(report.progress * 100)));
-      const stage = pct >= 100 ? 'ready' : pct > 85 ? 'compiling' : 'downloading';
-      post({
-        type: 'PROGRESS',
-        data: {
-          stage,
-          progress: pct,
-          detail: report.text || `Loading model weights (${pct}%)...`,
-        },
-        id,
-      });
+    const { AutoTokenizer, AutoModelForCausalLM } = await import('@huggingface/transformers');
+    const modelId = config.modelId || 'onnx-community/gemma-4-E2B-it-ONNX';
+
+    post({
+      type: 'PROGRESS',
+      data: {
+        stage: 'downloading',
+        progress: 15,
+        detail: `Fetching Gemma 4 tokenizer from Hugging Face...`,
+      },
+      id,
     });
 
-    await mlcEngine.reload(config.modelId);
+    gemmaTokenizer = await AutoTokenizer.from_pretrained(modelId);
+
+    post({
+      type: 'PROGRESS',
+      data: {
+        stage: 'downloading',
+        progress: 25,
+        detail: `Downloading Gemma 4 weights (q4f16 on WebGPU)...`,
+      },
+      id,
+    });
+
+    gemmaModel = await AutoModelForCausalLM.from_pretrained(modelId, {
+      dtype: {
+        embed_tokens: 'q4f16',
+        decoder_model_merged: 'q4f16',
+      },
+      device: 'webgpu',
+      progress_callback: (e: any) => {
+        if (e && e.status === 'progress' && e.total) {
+          const pct = Math.min(100, Math.round((e.loaded / e.total) * 100));
+          const stage = pct >= 95 ? 'compiling' : 'downloading';
+          post({
+            type: 'PROGRESS',
+            data: {
+              stage,
+              progress: pct,
+              detail: `Downloading Gemma 4 (${pct}%)...`,
+            },
+            id,
+          });
+        }
+      },
+    });
 
     post({
       type: 'PROGRESS',
       data: {
         stage: 'ready',
         progress: 100,
-        detail: `${config.modelId} loaded successfully on WebGPU.`,
+        detail: 'Gemma 4 loaded successfully on WebGPU.',
       },
       id,
     });
   } catch (err: any) {
-    console.error('Failed to initialize WebLLM WebGPU:', err);
-    throw new Error(`WebGPU Model Load Error: ${err.message || err}`);
+    console.error('Failed to load Gemma 4:', err);
+    throw new Error(`Gemma 4 Load Error: ${err.message || err}`);
   }
 }
 
-// --------------------------------------------------------------------------
-// LOCAL OLLAMA ENGINE (HTTP Streaming)
-// --------------------------------------------------------------------------
-
-async function queryOllama(
-  endpoint: string,
-  modelId: string,
+async function generateGemma4(
   prompt: string,
   systemPrompt?: string,
   onChunk?: (chunk: string) => void
 ): Promise<string> {
-  const url = `${endpoint.replace(/\/+$/, '')}/api/generate`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: modelId || 'llama3.2',
-      prompt,
-      system: systemPrompt,
-      stream: !!onChunk,
-    }),
+  const { TextStreamer } = await import('@huggingface/transformers');
+  const fullPrompt = systemPrompt
+    ? `<start_of_turn>system\n${systemPrompt}<end_of_turn>\n<start_of_turn>user\n${prompt}<end_of_turn>\n<start_of_turn>model\n`
+    : `<start_of_turn>user\n${prompt}<end_of_turn>\n<start_of_turn>model\n`;
+
+  const inputs = await gemmaTokenizer(fullPrompt);
+  let full = '';
+
+  const streamer = new TextStreamer(gemmaTokenizer, {
+    skip_prompt: true,
+    callback_function: (chunk: string) => {
+      full += chunk;
+      onChunk?.(chunk);
+    },
   });
 
-  if (!res.ok) {
-    throw new Error(`Ollama error (${res.status}): ${res.statusText}. Make sure Ollama is running at ${endpoint}`);
+  await gemmaModel.generate({
+    ...inputs,
+    max_new_tokens: 1024,
+    streamer,
+  });
+
+  return full;
+}
+
+// --------------------------------------------------------------------------
+// 2. BONSAI 27B (Prism ML 1-Bit WebGPU Kernels)
+// --------------------------------------------------------------------------
+
+async function initBonsai27B(config: ModelConfig, id: string) {
+  post({
+    type: 'PROGRESS',
+    data: {
+      stage: 'downloading',
+      progress: 5,
+      detail: 'Requesting WebGPU device and checking 1-bit Bonsai kernels...',
+    },
+    id,
+  });
+
+  if (typeof navigator !== 'undefined' && !(navigator as any).gpu) {
+    throw new Error('WebGPU is not supported in this browser. Please use Chrome/Edge or switch to Dev Mock mode.');
   }
 
-  if (onChunk && res.body) {
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let full = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunkStr = decoder.decode(value, { stream: true });
-      const lines = chunkStr.split('\n').filter((l) => l.trim().length > 0);
-      for (const line of lines) {
-        try {
-          const json = JSON.parse(line);
-          if (json.response) {
-            full += json.response;
-            onChunk(json.response);
-          }
-        } catch {
-          // ignore incomplete json chunk
+  try {
+    const modelId = config.modelId || DEFAULT_MODEL_ID;
+
+    bonsaiSession = await Bonsai27B.load(modelId, {
+      file: DEFAULT_GGUF_FILE,
+      onProgress: (event: any) => {
+        if (event.loadedBytes && event.totalBytes) {
+          const pct = Math.min(100, Math.round((event.loadedBytes / event.totalBytes) * 100));
+          const stage = pct >= 95 ? 'compiling' : 'downloading';
+          post({
+            type: 'PROGRESS',
+            data: {
+              stage,
+              progress: pct,
+              detail: event.message || `Downloading Bonsai 27B 1-bit weights (${pct}%)...`,
+            },
+            id,
+          });
+        } else if (event.message) {
+          post({
+            type: 'PROGRESS',
+            data: {
+              stage: 'compiling',
+              progress: 50,
+              detail: event.message,
+            },
+            id,
+          });
         }
-      }
-    }
-    return full;
-  } else {
-    const data = await res.json();
-    return data.response || '';
+      },
+    });
+
+    post({
+      type: 'PROGRESS',
+      data: {
+        stage: 'ready',
+        progress: 100,
+        detail: 'Bonsai 27B loaded successfully on WebGPU.',
+      },
+      id,
+    });
+  } catch (err: any) {
+    console.error('Failed to load Bonsai 27B:', err);
+    throw new Error(`Bonsai 27B Load Error: ${err.message || err}`);
   }
 }
 
-// Helper to run SLM inference across available engines
-async function runSLMGeneration(
+async function generateBonsai27B(
   prompt: string,
   systemPrompt?: string,
   onChunk?: (chunk: string) => void
 ): Promise<string> {
-  if (currentConfig.engine === 'ollama') {
-    return await queryOllama(
-      currentConfig.ollamaEndpoint || 'http://localhost:11434',
-      currentConfig.modelId || 'llama3.2',
-      prompt,
-      systemPrompt,
-      onChunk
-    );
+  if (!bonsaiSession) throw new Error('Bonsai 27B session not initialized');
+
+  const messages: { role: string; content: string }[] = [];
+  if (systemPrompt) {
+    messages.push({ role: 'system', content: systemPrompt });
   }
+  messages.push({ role: 'user', content: prompt });
 
-  if ((currentConfig.engine === 'webllm-webgpu' || currentConfig.engine === 'litert-webgpu') && mlcEngine) {
-    const messages: any[] = [];
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-    messages.push({ role: 'user', content: prompt });
+  const stream = bonsaiSession.generate(messages, { maxNewTokens: 1024 });
+  let full = '';
 
-    if (onChunk) {
-      const stream = await mlcEngine.chat.completions.create({
-        messages,
-        stream: true,
-        temperature: 0.2,
-      });
-      let full = '';
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content || '';
-        if (delta) {
-          full += delta;
-          onChunk(delta);
-        }
-      }
-      return full;
-    } else {
-      const reply = await mlcEngine.chat.completions.create({
-        messages,
-        stream: false,
-        temperature: 0.2,
-      });
-      return reply.choices[0]?.message?.content || '';
+  for await (const tok of stream) {
+    if (tok.delta) {
+      full += tok.delta;
+      onChunk?.(tok.delta);
     }
   }
 
-  throw new Error('No active SLM engine initialized for neural generation');
+  return full;
+}
+
+// --------------------------------------------------------------------------
+// UNIFIED NEURAL GENERATION DISPATCHER
+// --------------------------------------------------------------------------
+
+async function runNeuralGeneration(
+  prompt: string,
+  systemPrompt?: string,
+  onChunk?: (chunk: string) => void
+): Promise<string> {
+  if (currentConfig.engine === 'gemma4-webgpu' && gemmaModel) {
+    return await generateGemma4(prompt, systemPrompt, onChunk);
+  }
+
+  if (currentConfig.engine === 'bonsai-webgpu' && bonsaiSession) {
+    return await generateBonsai27B(prompt, systemPrompt, onChunk);
+  }
+
+  throw new Error(`No active WebGPU model session loaded for ${currentConfig.engine}`);
 }
 
 // --------------------------------------------------------------------------
@@ -202,24 +272,22 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
             id,
           });
           post({ type: 'RESULT', data: { success: true }, id });
-        } else if (req.config.engine === 'ollama') {
-          const endpoint = req.config.ollamaEndpoint || 'http://localhost:11434';
-          post({
-            type: 'PROGRESS',
-            data: { stage: 'ready', progress: 100, detail: `Connected to Local Ollama (${endpoint})` },
-            id,
-          });
+        } else if (req.config.engine === 'gemma4-webgpu') {
+          await initGemma4(req.config, id);
           post({ type: 'RESULT', data: { success: true }, id });
-        } else {
-          // WebGPU (WebLLM)
-          await initWebLLMEngine(req.config, id);
+        } else if (req.config.engine === 'bonsai-webgpu') {
+          await initBonsai27B(req.config, id);
           post({ type: 'RESULT', data: { success: true }, id });
         }
         break;
       }
 
       case 'EXTRACT_TOPICS': {
-        if (currentConfig.engine === 'mock-dev' || (!mlcEngine && currentConfig.engine !== 'ollama')) {
+        const isNeuralReady =
+          (currentConfig.engine === 'gemma4-webgpu' && !!gemmaModel) ||
+          (currentConfig.engine === 'bonsai-webgpu' && !!bonsaiSession);
+
+        if (currentConfig.engine === 'mock-dev' || !isNeuralReady) {
           const result = mockExtractTopics(req.text);
           post({ type: 'RESULT', data: result, id });
         } else {
@@ -234,7 +302,7 @@ STRICT RULES:
 
           const prompt = `Analyze this text and extract topics:\n\n${req.text.slice(0, 3000)}\n\nJSON:`;
           try {
-            const raw = await runSLMGeneration(prompt, system);
+            const raw = await runNeuralGeneration(prompt, system);
             const jsonMatch = raw.match(/\{[\s\S]*\}/);
             const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
             if (Array.isArray(parsed.topics) && parsed.topics.length > 0) {
@@ -250,7 +318,11 @@ STRICT RULES:
       }
 
       case 'GENERATE_NOTE': {
-        if (currentConfig.engine === 'mock-dev' || (!mlcEngine && currentConfig.engine !== 'ollama')) {
+        const isNeuralReady =
+          (currentConfig.engine === 'gemma4-webgpu' && !!gemmaModel) ||
+          (currentConfig.engine === 'bonsai-webgpu' && !!bonsaiSession);
+
+        if (currentConfig.engine === 'mock-dev' || !isNeuralReady) {
           const note = mockGenerateNote(req.topic, req.facts, req.existingContent);
           post({ type: 'RESULT', data: note, id });
         } else {
@@ -272,7 +344,7 @@ STRICT RULES:
 Output only the Markdown text with no conversational preamble:`;
 
           try {
-            const note = await runSLMGeneration(prompt, system);
+            const note = await runNeuralGeneration(prompt, system);
             post({ type: 'RESULT', data: note.trim(), id });
           } catch {
             post({ type: 'RESULT', data: mockGenerateNote(req.topic, req.facts, req.existingContent), id });
@@ -282,7 +354,11 @@ Output only the Markdown text with no conversational preamble:`;
       }
 
       case 'ROUTE_QUERY': {
-        if (currentConfig.engine === 'mock-dev' || (!mlcEngine && currentConfig.engine !== 'ollama')) {
+        const isNeuralReady =
+          (currentConfig.engine === 'gemma4-webgpu' && !!gemmaModel) ||
+          (currentConfig.engine === 'bonsai-webgpu' && !!bonsaiSession);
+
+        if (currentConfig.engine === 'mock-dev' || !isNeuralReady) {
           const result = mockRouteQuery(req.query, req.indexSummary);
           post({ type: 'RESULT', data: result, id });
         } else {
@@ -297,7 +373,7 @@ Output strictly JSON:
 {"selectedFilenames": ["filename1.md"], "reasoning": "brief explanation"}`;
 
           try {
-            const raw = await runSLMGeneration(prompt, system);
+            const raw = await runNeuralGeneration(prompt, system);
             const jsonMatch = raw.match(/\{[\s\S]*\}/);
             const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
             post({ type: 'RESULT', data: parsed, id });
@@ -309,7 +385,11 @@ Output strictly JSON:
       }
 
       case 'SYNTHESIZE_ANSWER': {
-        if (currentConfig.engine === 'mock-dev' || (!mlcEngine && currentConfig.engine !== 'ollama')) {
+        const isNeuralReady =
+          (currentConfig.engine === 'gemma4-webgpu' && !!gemmaModel) ||
+          (currentConfig.engine === 'bonsai-webgpu' && !!bonsaiSession);
+
+        if (currentConfig.engine === 'mock-dev' || !isNeuralReady) {
           await mockSynthesizeAnswer(req.query, req.notes, (chunk) => {
             post({ type: 'STREAM_CHUNK', chunk, id });
           });
@@ -325,7 +405,7 @@ User Question: "${req.query}"
 Answer:`;
 
           try {
-            await runSLMGeneration(prompt, system, (chunk) => {
+            await runNeuralGeneration(prompt, system, (chunk) => {
               post({ type: 'STREAM_CHUNK', chunk, id });
             });
             post({ type: 'STREAM_DONE', id });

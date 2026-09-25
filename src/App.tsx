@@ -6,7 +6,7 @@ import { NoteViewer } from './components/NoteViewer';
 import { vault } from './services/vault/vaultService';
 import { aiService } from './services/ai/aiService';
 import { VaultStats } from './services/vault/types';
-import { ModelEngineType, InitProgressEvent } from './services/ai/aiTypes';
+import { ModelEngineType, InitProgressEvent, SUPPORTED_MODELS } from './services/ai/aiTypes';
 import { Info, FolderCheck, Cpu, BookMarked } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -21,7 +21,7 @@ export const App: React.FC = () => {
     availableWikis: ['Default'],
   });
   const [engine, setEngine] = useState<ModelEngineType>('mock-dev');
-  const [modelId, setModelId] = useState<string>('Qwen2.5-0.5B-Instruct-q4f16_1-MLC');
+  const [modelId, setModelId] = useState<string>('onnx-community/gemma-4-E2B-it-ONNX');
   const [loadingProgress, setLoadingProgress] = useState<InitProgressEvent | null>(null);
 
   const refreshStats = async () => {
@@ -43,22 +43,26 @@ export const App: React.FC = () => {
     setEngine(newEngine);
     if (newModelId) setModelId(newModelId);
 
+    const modelName =
+      newEngine === 'gemma4-webgpu'
+        ? 'Gemma 4'
+        : newEngine === 'bonsai-webgpu'
+        ? 'Bonsai 27B'
+        : 'Dev Simulator';
+
     try {
       setLoadingProgress({
         stage: 'downloading',
-        progress: 10,
+        progress: 5,
         detail:
           newEngine === 'mock-dev'
             ? 'Activating fast simulated engine...'
-            : newEngine === 'ollama'
-            ? 'Connecting to local Ollama (localhost:11434)...'
-            : `Preparing ${newModelId || modelId}...`,
+            : `Initializing WebGPU device and checking ${modelName}...`,
       });
 
       await aiService.switchEngine(
         newEngine,
         newModelId || modelId,
-        undefined,
         (progress) => {
           setLoadingProgress(progress);
         }
@@ -68,7 +72,7 @@ export const App: React.FC = () => {
       setLoadingProgress({
         stage: 'error',
         progress: 0,
-        detail: `Engine error: ${err.message || err}. Reverting to Simulated Dev SLM.`,
+        detail: `Failed to load ${modelName}: ${err.message || err}. Reverting to Simulated Dev SLM.`,
       });
       setTimeout(() => {
         setEngine('mock-dev');
@@ -103,6 +107,8 @@ export const App: React.FC = () => {
     }
   };
 
+  const activeModel = SUPPORTED_MODELS.find((m) => m.id === modelId);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500/30 selection:text-indigo-200">
       {/* Top Navigation & Controls Header */}
@@ -125,8 +131,10 @@ export const App: React.FC = () => {
           <QueryPane
             onOpenPage={handleOpenPage}
             engine={engine}
-            modelId={modelId}
-            onSwitchToWebGPU={() => handleSelectEngine('webllm-webgpu', 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC')}
+            modelName={activeModel?.shortName || 'Gemma 4'}
+            onSwitchToWebGPU={() =>
+              handleSelectEngine('gemma4-webgpu', 'onnx-community/gemma-4-E2B-it-ONNX')
+            }
           />
         )}
 
@@ -177,9 +185,9 @@ export const App: React.FC = () => {
             <span className="text-slate-300 font-mono">
               {engine === 'mock-dev'
                 ? 'Simulated Dev SLM'
-                : engine === 'ollama'
-                ? 'Local Ollama'
-                : `WebGPU (${modelId.split('-')[0]})`}
+                : engine === 'gemma4-webgpu'
+                ? 'WebGPU (Gemma 4)'
+                : 'WebGPU (Bonsai 27B 1-Bit)'}
             </span>
           </span>
           <span className="hidden sm:inline text-slate-600">|</span>
