@@ -34,4 +34,5 @@ export interface VaultStats {
   vaultName: string;
   currentWiki: string;
   availableWikis: string[];
+  storageType?: 'filesystem' | 'indexeddb';
 }

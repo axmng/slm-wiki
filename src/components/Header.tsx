@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FolderOpen, Cpu, CheckCircle2, BookMarked, Plus, Loader2 } from 'lucide-react';
+import { FolderOpen, Cpu, CheckCircle2, BookMarked, Plus, Loader2, Trash2, HardDrive } from 'lucide-react';
 import { VaultStats } from '../services/vault/types';
 import { ModelEngineType, SUPPORTED_MODELS, InitProgressEvent } from '../services/ai/aiTypes';
 
@@ -12,6 +12,7 @@ interface HeaderProps {
   onSelectEngine: (newEngine: ModelEngineType, modelId?: string) => void;
   onSelectWiki: (wikiName: string) => void;
   onCreateWiki: (wikiName: string) => void;
+  onDeleteWiki?: (wikiName: string) => void;
   activeTab: 'query' | 'ingest' | 'notes';
   setActiveTab: (tab: 'query' | 'ingest' | 'notes') => void;
 }
@@ -25,6 +26,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectEngine,
   onSelectWiki,
   onCreateWiki,
+  onDeleteWiki,
   activeTab,
   setActiveTab,
 }) => {
@@ -133,6 +135,16 @@ export const Header: React.FC<HeaderProps> = ({
                   >
                     <Plus className="w-3.5 h-3.5" />
                   </button>
+
+                  {stats.currentWiki !== 'Default' && onDeleteWiki && (
+                    <button
+                      onClick={() => onDeleteWiki(stats.currentWiki)}
+                      title={`Delete wiki "${stats.currentWiki}"`}
+                      className="text-slate-500 hover:text-rose-400 p-0.5 hover:bg-slate-800 rounded transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -198,32 +210,44 @@ export const Header: React.FC<HeaderProps> = ({
             </select>
           </div>
 
-          {/* Mount Vault Folder Button */}
-          <button
-            onClick={onMountVault}
-            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
-              stats.isMounted
-                ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800/80 hover:bg-emerald-950/70'
-                : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700'
-            }`}
-            title={
-              stats.isMounted
-                ? `Mounted: ${stats.vaultName}`
-                : 'Mount an Obsidian Vault or folder from disk'
-            }
-          >
-            {stats.isMounted ? (
-              <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span className="truncate max-w-[120px]">{stats.vaultName}</span>
-              </>
-            ) : (
-              <>
-                <FolderOpen className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Mount Local Vault</span>
-              </>
+          {/* Mount Vault Folder Button & Storage Indicator */}
+          <div className="flex items-center gap-2">
+            {!stats.isMounted && (
+              <span
+                className="hidden lg:flex items-center gap-1.5 text-[11px] text-cyan-300 bg-cyan-950/60 border border-cyan-800/60 px-2.5 py-1 rounded-lg"
+                title="Your wikis and notes are saved automatically in browser IndexedDB (persists across tab closes)"
+              >
+                <HardDrive className="w-3 h-3 text-cyan-400" />
+                <span>IndexedDB (Persistent)</span>
+              </span>
             )}
-          </button>
+
+            <button
+              onClick={onMountVault}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                stats.isMounted
+                  ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800/80 hover:bg-emerald-950/70'
+                  : 'bg-indigo-950/40 text-indigo-200 border-indigo-700/60 hover:bg-indigo-900/60'
+              }`}
+              title={
+                stats.isMounted
+                  ? `Mounted: ${stats.vaultName} (writing directly to disk on Mac)`
+                  : 'Stored in persistent IndexedDB. Click to mount an Obsidian vault or folder from your Mac.'
+              }
+            >
+              {stats.isMounted ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span className="truncate max-w-[120px] font-mono">{stats.vaultName}</span>
+                </>
+              ) : (
+                <>
+                  <FolderOpen className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <span>Mount Local Folder</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
 

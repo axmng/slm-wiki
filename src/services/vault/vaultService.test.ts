@@ -93,6 +93,20 @@ describe('VaultService', () => {
     const consolidated = await service.readPage('Antibiotics');
     expect(consolidated!.content).toContain('penicillin history');
   });
+
+  it('supports exporting and deleting a wiki', async () => {
+    await service.createWiki('Temporary');
+    await service.savePage('Ephemeral', '# Ephemeral Concept\n\nTemporary test data.');
+
+    const exported = await service.exportWiki('Temporary');
+    expect(exported.length).toBeGreaterThan(0);
+    expect(exported.some((f) => f.filename === 'pages/Ephemeral.md')).toBe(true);
+
+    await service.deleteWiki('Temporary');
+    const wikis = await service.listWikis();
+    expect(wikis).not.toContain('Temporary');
+    expect(service.getActiveWiki()).toBe('Default');
+  });
 });
 
 describe('IngestionPipeline Multi-Wiki', () => {

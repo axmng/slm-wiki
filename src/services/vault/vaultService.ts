@@ -32,6 +32,99 @@ declare global {
   }
 }
 
+// ---------------------------------------------------------------------------
+// IndexedDB Persistence Layer (Preserves in-browser wikis across tab closes)
+// ---------------------------------------------------------------------------
+const DB_NAME = 'slm_wiki_vault_db';
+const DB_VERSION = 1;
+const STORE_NAME = 'files';
+
+function openVaultDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      return reject(new Error('IndexedDB not available in current environment'));
+    }
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function idbGet(key: string): Promise<string | undefined> {
+  try {
+    const db = await openVaultDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+async function idbSet(key: string, value: string): Promise<void> {
+  try {
+    const db = await openVaultDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.put(value, key);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    // Non-browser fallback
+  }
+}
+
+async function idbDelete(key: string): Promise<void> {
+  try {
+    const db = await openVaultDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.delete(key);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    // Non-browser fallback
+  }
+}
+
+async function idbGetAll(): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    const db = await openVaultDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.openCursor();
+      req.onsuccess = (e) => {
+        const cursor = (e.target as IDBRequest<IDBCursorWithValue>).result;
+        if (cursor) {
+          map.set(String(cursor.key), String(cursor.value));
+          cursor.continue();
+        } else {
+          resolve(map);
+        }
+      };
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return map;
+  }
+}
+
 export class VaultService {
   private rootHandle: FileSystemDirectoryHandle | null = null;
   private wikisDirHandle: FileSystemDirectoryHandle | null = null;
@@ -43,12 +136,62 @@ export class VaultService {
   private currentWiki = 'Default';
   private availableWikis: string[] = ['Default'];
 
-  // In-memory fallback if showDirectoryPicker is cancelled or unsupported
+  // In-memory cache synced with persistent IndexedDB
   private virtualStorage = new Map<string, string>();
-  private vaultName = 'Default Memory Vault';
+  private vaultName = 'Browser Persistent Storage (IndexedDB)';
+  private isInitialized = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
     this.initVirtualStarter();
+  }
+
+  public async init(): Promise<void> {
+    if (this.isInitialized) return;
+    if (!this.initPromise) {
+      this.initPromise = (async () => {
+        if (typeof indexedDB !== 'undefined') {
+          try {
+            const persisted = await idbGetAll();
+            if (persisted.size > 0) {
+              this.virtualStorage = persisted;
+              const savedWiki = await idbGet('__active_wiki__');
+              if (savedWiki) {
+                this.currentWiki = savedWiki;
+              }
+            } else {
+              this.initVirtualStarter();
+              for (const [k, v] of this.virtualStorage.entries()) {
+                await idbSet(k, v);
+              }
+            }
+          } catch (err) {
+            console.warn('IndexedDB init warning, using memory cache:', err);
+            this.initVirtualStarter();
+          }
+        } else {
+          this.initVirtualStarter();
+        }
+        this.isInitialized = true;
+      })();
+    }
+    return this.initPromise;
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (!this.isInitialized) {
+      await this.init();
+    }
+  }
+
+  private async setVirtual(key: string, value: string): Promise<void> {
+    this.virtualStorage.set(key, value);
+    await idbSet(key, value);
+  }
+
+  private async deleteVirtual(key: string): Promise<void> {
+    this.virtualStorage.delete(key);
+    await idbDelete(key);
   }
 
   private initVirtualStarter() {
@@ -88,6 +231,7 @@ export class VaultService {
   }
 
   public async listWikis(): Promise<string[]> {
+    await this.ensureInitialized();
     if (!this.rootHandle || this.isVirtual) {
       const set = new Set<string>();
       for (const key of this.virtualStorage.keys()) {
@@ -124,6 +268,7 @@ export class VaultService {
    * Create a new Wiki container
    */
   public async createWiki(wikiName: string): Promise<void> {
+    await this.ensureInitialized();
     const cleanName = wikiName.replace(/[\\/:*?"<>|#^[\]]/g, '').trim();
     if (!cleanName) throw new Error('Invalid wiki name');
 
@@ -133,11 +278,11 @@ export class VaultService {
         this.availableWikis.sort();
       }
       const prefix = `wikis/${cleanName}/`;
-      this.virtualStorage.set(
+      await this.setVirtual(
         `${prefix}INDEX.md`,
         `# ${cleanName} Wiki Index\n\n| Topic | Summary | File | Updated |\n| :--- | :--- | :--- | :--- |\n`
       );
-      this.virtualStorage.set(
+      await this.setVirtual(
         `${prefix}LOG.md`,
         `# ${cleanName} Activity Log\n\n- **${new Date().toISOString().replace('T', ' ').slice(0, 19)}**: [INIT] Wiki "${cleanName}" created.\n`
       );
@@ -172,7 +317,9 @@ export class VaultService {
    * Switch the active Wiki
    */
   public async setActiveWiki(wikiName: string): Promise<void> {
+    await this.ensureInitialized();
     this.currentWiki = wikiName;
+    await idbSet('__active_wiki__', wikiName);
 
     if (!this.rootHandle || this.isVirtual) {
       return;
@@ -199,11 +346,91 @@ export class VaultService {
   }
 
   /**
+   * Delete an existing Wiki
+   */
+  public async deleteWiki(wikiName: string): Promise<void> {
+    await this.ensureInitialized();
+    const cleanName = wikiName.replace(/[\\/:*?"<>|#^[\]]/g, '').trim();
+    if (!cleanName || cleanName === 'Default') {
+      throw new Error('The Default wiki cannot be deleted.');
+    }
+
+    if (!this.rootHandle || this.isVirtual) {
+      const prefix = `wikis/${cleanName}/`;
+      const keysToDelete: string[] = [];
+      for (const k of this.virtualStorage.keys()) {
+        if (k.startsWith(prefix)) {
+          keysToDelete.push(k);
+        }
+      }
+      for (const k of keysToDelete) {
+        await this.deleteVirtual(k);
+      }
+      this.availableWikis = this.availableWikis.filter((w) => w !== cleanName);
+    } else {
+      if (this.wikisDirHandle && this.wikisDirHandle.removeEntry) {
+        try {
+          await this.wikisDirHandle.removeEntry(cleanName, { recursive: true });
+        } catch (err) {
+          console.warn(`Could not remove wiki directory ${cleanName}:`, err);
+        }
+      }
+      this.availableWikis = this.availableWikis.filter((w) => w !== cleanName);
+    }
+
+    if (this.currentWiki === cleanName) {
+      await this.setActiveWiki('Default');
+    }
+  }
+
+  /**
+   * Export all files in a wiki as an array of filename and content
+   */
+  public async exportWiki(wikiName?: string): Promise<{ filename: string; content: string }[]> {
+    await this.ensureInitialized();
+    const target = wikiName || this.currentWiki;
+    const files: { filename: string; content: string }[] = [];
+
+    if (!this.rootHandle || this.isVirtual) {
+      const prefix = `wikis/${target}/`;
+      for (const [key, content] of this.virtualStorage.entries()) {
+        if (key.startsWith(prefix)) {
+          files.push({
+            filename: key.replace(prefix, ''),
+            content,
+          });
+        }
+      }
+    } else {
+      const pages = await this.listPages();
+      for (const p of pages) {
+        const page = await this.readPage(p);
+        if (page) {
+          files.push({ filename: `pages/${page.filename}`, content: page.content });
+        }
+      }
+      const raw = await this.listRawFiles();
+      for (const r of raw) {
+        const rawContent = await this.readRaw(r.filename);
+        if (rawContent) {
+          files.push({ filename: `raw/${r.filename}`, content: rawContent });
+        }
+      }
+      const index = await this.readIndex();
+      files.push({ filename: 'INDEX.md', content: this.serializeIndexMarkdown(index) });
+      const log = await this.readLog();
+      files.push({ filename: 'LOG.md', content: log });
+    }
+
+    return files;
+  }
+
+  /**
    * Prompt user to pick a local folder using File System Access API
    */
   public async mountDirectory(): Promise<VaultStats> {
     if (!window.showDirectoryPicker) {
-      console.warn('File System Access API not supported in this browser. Using virtual in-memory vault.');
+      console.warn('File System Access API not supported in this browser. Using persistent in-browser storage.');
       this.isVirtual = true;
       return this.getStats();
     }
@@ -216,8 +443,26 @@ export class VaultService {
       // Ensure 'wikis' container directory exists
       this.wikisDirHandle = await this.rootHandle.getDirectoryHandle('wikis', { create: true });
 
+      // Automatically migrate in-browser wikis to the mounted local folder!
+      if (this.virtualStorage.size > 0) {
+        for (const [key, content] of this.virtualStorage.entries()) {
+          if (!key.startsWith('wikis/')) continue;
+          const parts = key.split('/');
+          if (parts.length >= 3) {
+            const wName = parts[1];
+            const wHandle = await this.wikisDirHandle.getDirectoryHandle(wName, { create: true });
+            if (parts.length === 3) {
+              await this.writeFileHandle(wHandle, parts[2], content);
+            } else if (parts.length === 4) {
+              const subHandle = await wHandle.getDirectoryHandle(parts[2], { create: true });
+              await this.writeFileHandle(subHandle, parts[3], content);
+            }
+          }
+        }
+      }
+
       const wikis = await this.listWikis();
-      const targetWiki = wikis[0] || 'Default';
+      const targetWiki = wikis.includes(this.currentWiki) ? this.currentWiki : (wikis[0] || 'Default');
       await this.setActiveWiki(targetWiki);
 
       return await this.getStats();
@@ -229,6 +474,17 @@ export class VaultService {
         console.error('Error mounting folder:', error);
       }
       return this.getStats();
+    }
+  }
+
+  private async writeFileHandle(dirHandle: FileSystemDirectoryHandle, name: string, content: string): Promise<void> {
+    try {
+      const fileHandle = await dirHandle.getFileHandle(name, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(content);
+      await writable.close();
+    } catch (err) {
+      console.warn(`Could not sync ${name} to mounted directory:`, err);
     }
   }
 
@@ -248,6 +504,7 @@ export class VaultService {
   }
 
   public async getStats(): Promise<VaultStats> {
+    await this.ensureInitialized();
     await this.deduplicateWikiPages();
     const pages = await this.listPages();
     const raw = await this.listRawFiles();
@@ -260,9 +517,12 @@ export class VaultService {
       rawCount: raw.length,
       lastLogEntry: lastLogLine,
       isMounted: this.isUsingFileSystemAPI(),
-      vaultName: this.getVaultName(),
+      vaultName: this.isUsingFileSystemAPI()
+        ? this.rootHandle?.name || 'Local Vault'
+        : 'Browser Persistent Storage (IndexedDB)',
       currentWiki: this.currentWiki,
       availableWikis: wikis,
+      storageType: this.isUsingFileSystemAPI() ? 'filesystem' : 'indexeddb',
     };
   }
 
@@ -377,7 +637,7 @@ export class VaultService {
     const title = filename.replace('.md', '');
 
     if (!this.rootHandle || this.isVirtual) {
-      this.virtualStorage.set(`${this.getVirtualPrefix()}pages/${filename}`, content);
+      await this.setVirtual(`${this.getVirtualPrefix()}pages/${filename}`, content);
       return {
         title,
         filename,
@@ -407,7 +667,7 @@ export class VaultService {
   public async deletePage(topic: string): Promise<void> {
     const filename = this.sanitizeFilename(topic);
     if (!this.rootHandle || this.isVirtual) {
-      this.virtualStorage.delete(`${this.getVirtualPrefix()}pages/${filename}`);
+      await this.deleteVirtual(`${this.getVirtualPrefix()}pages/${filename}`);
       return;
     }
 
@@ -490,7 +750,7 @@ export class VaultService {
     const markdown = `# ${title}\n*Archived: ${new Date().toISOString()} in Wiki "${this.currentWiki}"*\n\n---\n\n${rawText}\n`;
 
     if (!this.rootHandle || this.isVirtual) {
-      this.virtualStorage.set(`${this.getVirtualPrefix()}raw/${filename}`, markdown);
+      await this.setVirtual(`${this.getVirtualPrefix()}raw/${filename}`, markdown);
       return filename;
     }
 
@@ -626,7 +886,7 @@ export class VaultService {
   public async saveIndex(index: WikiIndex): Promise<void> {
     const md = this.serializeIndexMarkdown(index);
     if (!this.rootHandle || this.isVirtual) {
-      this.virtualStorage.set(`${this.getVirtualPrefix()}INDEX.md`, md);
+      await this.setVirtual(`${this.getVirtualPrefix()}INDEX.md`, md);
       return;
     }
 
@@ -644,7 +904,7 @@ export class VaultService {
     if (!this.rootHandle || this.isVirtual) {
       const key = `${this.getVirtualPrefix()}LOG.md`;
       const current = this.virtualStorage.get(key) || `# ${this.currentWiki} Activity Log\n\n`;
-      this.virtualStorage.set(key, current + line);
+      await this.setVirtual(key, current + line);
       return;
     }
 

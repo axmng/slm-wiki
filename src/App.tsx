@@ -30,8 +30,12 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    refreshStats();
-    aiService.initModel({ engine: 'mock-dev', modelId });
+    const startup = async () => {
+      await vault.init();
+      await refreshStats();
+      aiService.initModel({ engine: 'mock-dev', modelId });
+    };
+    startup();
   }, []);
 
   const handleMountVault = async () => {
@@ -93,6 +97,14 @@ export const App: React.FC = () => {
     setTargetPage('INDEX');
   };
 
+  const handleDeleteWiki = async (wikiName: string) => {
+    if (confirm(`Are you sure you want to delete the wiki "${wikiName}" and all of its notes?`)) {
+      await vault.deleteWiki(wikiName);
+      await refreshStats();
+      setTargetPage('INDEX');
+    }
+  };
+
   const handleOpenPage = (pageName: string) => {
     setTargetPage(pageName);
     setActiveTab('notes');
@@ -121,6 +133,7 @@ export const App: React.FC = () => {
         onSelectEngine={handleSelectEngine}
         onSelectWiki={handleSelectWiki}
         onCreateWiki={handleCreateWiki}
+        onDeleteWiki={handleDeleteWiki}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
       />
