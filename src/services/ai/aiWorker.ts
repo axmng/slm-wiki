@@ -371,9 +371,11 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
           const system = `You are an expert research librarian organizing a personal knowledge base.
 Extract 1 to 3 distinct core scientific, technical, or domain concepts from the text.
 STRICT RULES:
+- Concepts must strictly be noun phrases or proper nouns (e.g. "VIM-1", "Salmonella enterica", "Carbapenem Resistance").
+- NEVER extract sentence fragments, verb phrases, or words ending in verbs (e.g. NEVER "VIM-1 Gene Was", "Isolates Were", "Strain Was", "Gene Were").
 - Never extract document layout or publishing words (e.g. Page, Article, Prevalence, Figure, Author, Review, Results).
 - Never extract broad geographic countries (e.g. China, Canada, India) or generic adjectives (e.g. Environmental, Clinical).
-- Extract specific subject concepts (e.g. CPE Strains, Carbapenem Resistance, Antibiotics).
+- Preserve proper scientific acronym and gene casing (e.g. "VIM-1", "blaVIM-1", "OXA-48", "KPC-2").
 - Output STRICTLY a JSON object with this shape:
 {"topics": [{"name": "Concept Name", "summary": "1-sentence executive summary", "keyFacts": ["bullet fact 1", "bullet fact 2"]}]}`;
 
@@ -384,7 +386,16 @@ STRICT RULES:
             const jsonMatch = raw.match(/\{[\s\S]*\}/);
             const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
             if (Array.isArray(parsed.topics) && parsed.topics.length > 0) {
-              post({ type: 'RESULT', data: parsed, id });
+              const cleanedTopics = parsed.topics.filter((t: any) => {
+                if (!t || typeof t.name !== 'string') return false;
+                const words = t.name.trim().split(/\s+/);
+                return !words.some((w: string) => /\b(was|were|is|are|been|being|has|had|have)\b/i.test(w));
+              });
+              if (cleanedTopics.length > 0) {
+                post({ type: 'RESULT', data: { topics: cleanedTopics }, id });
+              } else {
+                post({ type: 'RESULT', data: mockExtractTopics(req.text), id });
+              }
             } else {
               post({ type: 'RESULT', data: mockExtractTopics(req.text), id });
             }

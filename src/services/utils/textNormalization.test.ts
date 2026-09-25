@@ -30,5 +30,15 @@ describe('textNormalization', () => {
     expect(getCanonicalRoot('Antibiotics')).toBe('antibiotic');
     expect(getCanonicalRoot('Antibiotic')).toBe('antibiotic');
     expect(getCanonicalRoot('Technologies')).toBe('technology');
+    expect(getCanonicalRoot('VIM-1 Gene')).toBe('vim-1');
+    expect(getCanonicalRoot('blaVIM-1')).toBe('vim-1');
+    expect(getCanonicalRoot('CPE Strains')).toBe('cpe');
+  });
+
+  it('correctly equates technical synonyms and gene descriptors', () => {
+    expect(areTopicsEquivalent('VIM-1', 'VIM-1 Gene')).toBe(true);
+    expect(areTopicsEquivalent('blaVIM-1', 'VIM-1')).toBe(true);
+    expect(areTopicsEquivalent('CPE', 'CPE Strains')).toBe(true);
+    expect(areTopicsEquivalent('MDR', 'MDR Isolates')).toBe(true);
   });
 });

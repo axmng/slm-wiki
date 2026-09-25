@@ -1,7 +1,7 @@
 import { TopicExtractionResult, RoutingResult } from './aiTypes';
 import { getCanonicalRoot } from '../utils/textNormalization';
 
-// Comprehensive blacklist of structural, layout, publishing, geographic, and generic discourse words
+// Comprehensive blacklist of structural, layout, publishing, geographic, verbs, and generic discourse words
 const STOP_WORDS = new Set([
   // Document structure & publishing metadata
   'page', 'pages', 'article', 'articles', 'paper', 'papers', 'chapter', 'section', 'sections',
@@ -21,24 +21,31 @@ const STOP_WORDS = new Set([
   'australia', 'australian', 'spain', 'spanish', 'italy', 'italian', 'russia', 'russian',
   'mexico', 'mexican', 'africa', 'african',
 
+  // Auxiliary and linking verbs (must NEVER be part of concept names)
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having',
+  'do', 'does', 'did', 'done', 'doing', 'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+
+  // Action and reporting verbs common in technical papers
+  'detected', 'detect', 'identifying', 'identified', 'identify', 'isolated', 'isolating',
+  'observed', 'analyzed', 'reported', 'reporting', 'confirmed', 'showed', 'demonstrated',
+  'investigated', 'obtained', 'performed', 'tested', 'carried', 'encoded', 'conferred',
+  'contained', 'occurred', 'revealed', 'associated', 'caused', 'mediated', 'determined',
+  'producing', 'produced', 'located', 'examined', 'evaluated', 'harbored', 'harboring',
+
+  // Prepositions, pronouns, conjunctions, and determiners
+  'in', 'on', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into', 'through',
+  'during', 'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down', 'out', 'off',
+  'over', 'under', 'via', 'and', 'or', 'but', 'nor', 'so', 'yet', 'as', 'than',
+  'a', 'an', 'the', 'it', 'its', 'they', 'them', 'their', 'theirs', 'we', 'our', 'us',
+  'who', 'whom', 'whose', 'which', 'that', 'this', 'these', 'those', 'there',
+  'what', 'where', 'when', 'why', 'how', 'former', 'latter', 'such', 'also',
+
   // Standalone relational adjectives (rejected when alone, e.g. "Environmental")
   'environmental', 'clinical', 'statistical', 'experimental', 'regional', 'global',
   'national', 'international', 'general', 'standard', 'primary', 'secondary', 'tertiary',
   'initial', 'final', 'similar', 'different', 'various', 'several', 'multiple',
-  'total', 'average', 'recent', 'daily', 'annual', 'overall', 'associated',
-
-  // Common English discourse words often capitalized at start of sentences
-  'this', 'that', 'these', 'those', 'there', 'their', 'they', 'what', 'where', 'when',
-  'which', 'with', 'from', 'have', 'been', 'also', 'such', 'more', 'most', 'some',
-  'many', 'each', 'every', 'other', 'another', 'both', 'only', 'well', 'very', 'even',
-  'first', 'second', 'third', 'last', 'further', 'specifically', 'particularly',
-  'generally', 'importantly', 'furthermore', 'moreover', 'however', 'although', 'therefore',
-  'thus', 'hence', 'instead', 'meanwhile', 'finally', 'then', 'here', 'now', 'since',
-  'while', 'whereas', 'because', 'despite', 'according', 'based', 'using', 'given',
-  'shown', 'noted', 'observed', 'discussed', 'described', 'found', 'seen', 'known',
-  'regarding', 'concerning', 'including', 'major', 'significant', 'critical', 'potential',
-  'possible', 'likely', 'today', 'current', 'currently', 'future', 'past',
-  'number', 'high', 'higher', 'highest', 'low', 'lower', 'lowest'
+  'total', 'average', 'recent', 'daily', 'annual', 'overall', 'number',
+  'high', 'higher', 'highest', 'low', 'lower', 'lowest'
 ]);
 
 // Core domain indicator words that boost technical/scientific concepts
@@ -52,6 +59,26 @@ const DOMAIN_INDICATORS = new Set([
 
 function isStopWord(word: string): boolean {
   return STOP_WORDS.has(word.toLowerCase().trim());
+}
+
+/**
+ * Format individual words preserving technical acronyms, gene symbols, and title casing
+ */
+function formatTopicWord(w: string): string {
+  // 1. Acronym with optional suffix/number (e.g. VIM-1, OXA-48, KPC-2, NDM-1, CPE, MDR, AMR)
+  if (/^[A-Z]{2,6}(?:-[A-Za-z0-9]+)?$/.test(w)) {
+    return w;
+  }
+  // 2. Specific gene prefixes (e.g. blaVIM-1, blaKPC-2, blaNDM-1)
+  if (/^bla[A-Z]{2,6}(?:-[A-Za-z0-9]+)?$/i.test(w)) {
+    return 'bla' + w.slice(3).toUpperCase();
+  }
+  // 3. Technical terms with numbers or hyphens (e.g. CRISPR-Cas9, COVID-19)
+  if (/[A-Z]/.test(w) && (/[0-9]/.test(w) || /-/.test(w))) {
+    return w;
+  }
+  // 4. Regular words: Title Case (e.g. resistance -> Resistance)
+  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
 }
 
 /**
@@ -71,56 +98,47 @@ function cleanTextContent(text: string): string {
 
 /**
  * Intelligent entity and domain concept extractor with frequency & salience ranking.
- * Supports acronyms (CPE, MDR, AMR), compound scientific terms (CPE Strains, Carbapenem Resistance),
- * and prevents generic geographic or editorial stopwords.
+ * Supports acronyms (VIM-1, CPE, MDR), compound scientific terms (CPE Strains, Carbapenem Resistance),
+ * and prevents verbs, prepositions, or generic stopwords from corrupting concept nodes.
  */
 export function mockExtractTopics(rawText: string): TopicExtractionResult {
   const cleaned = cleanTextContent(rawText);
 
-  // Match 3 classes of technical terms:
-  // 1. Acronyms & hyphenated acronyms (e.g. CPE, MDR, AMR, ESBL, MRSA, PCR, CRISPR-Cas9)
-  const acronymMatches = cleaned.match(/\b[A-Z]{2,6}(?:-[A-Za-z0-9]+)?\b/g) || [];
+  // Match 4 classes of technical terms:
+  // 1. Acronyms & gene codes (e.g. VIM-1, CPE, MDR, AMR, ESBL, MRSA, blaVIM-1)
+  const acronymMatches = cleaned.match(/\b(?:bla)?[A-Z]{2,6}(?:-[A-Za-z0-9]+)?\b/g) || [];
 
-  // 2. Acronym + Noun phrases (e.g. "CPE strains", "MDR isolates", "PCR detection")
-  const acronymPhrases = cleaned.match(/\b[A-Z]{2,6}(?:-[A-Za-z0-9]+)?\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\b/g) || [];
+  // 2. Acronym + Domain Noun phrases (e.g. "CPE strains", "MDR isolates", "VIM-1 gene")
+  const acronymPhrases = cleaned.match(/\b(?:bla)?[A-Z]{2,6}(?:-[A-Za-z0-9]+)?\s+(?:gene|genes|strain|strains|isolate|isolates|plasmid|plasmids|resistance|enzyme|enzymes)\b/gi) || [];
 
-  // 3. Multi-word Capitalized phrases (e.g. "Carbapenem Resistance", "Bacterial Transmission")
-  const titleCaseMatches = cleaned.match(/\b[A-Z][a-z]+(?:-[A-Za-z]+)?(?:\s+[A-Za-z]+){0,2}\b/g) || [];
+  // 3. Multi-word Capitalized phrases (e.g. "Carbapenem Resistance", "Livestock Production")
+  const titleCaseMatches = cleaned.match(/\b[A-Z][a-z]+(?:-[A-Za-z]+)?(?:\s+[A-Z][a-z]+){1,2}\b/g) || [];
 
-  const allCandidates = [...acronymPhrases, ...acronymMatches, ...titleCaseMatches];
+  // 4. Biological binomial names (e.g. "Salmonella enterica", "Escherichia coli")
+  const binomialMatches = cleaned.match(/\b[A-Z][a-z]+\s+[a-z]{3,15}\b/g) || [];
+
+  const allCandidates = [...acronymPhrases, ...acronymMatches, ...titleCaseMatches, ...binomialMatches];
   const candidateScores = new Map<string, { term: string; score: number; count: number }>();
 
   for (const m of allCandidates) {
     const trimmed = m.trim();
     const words = trimmed.split(/\s+/);
 
-    // Rule 1: Check if single word is a stopword or too short (< 2 for acronyms, < 4 for regular words)
+    // Rule 1: No word in the candidate phrase may be a stopword, verb, or preposition
+    if (words.some((w) => isStopWord(w))) {
+      continue;
+    }
+
+    // Rule 2: Single word validation
     if (words.length === 1) {
-      if (isStopWord(words[0])) continue;
-      const isAcronym = /^[A-Z]{2,6}$/.test(words[0]);
+      const isAcronym = /^[A-Z]{2,6}(?:-[A-Za-z0-9]+)?$/.test(words[0]) || /^bla[A-Z]{2,6}/i.test(words[0]);
       if (!isAcronym && words[0].length < 4) continue;
     }
 
-    // Rule 2: Multi-word phrase must not start or end with a stopword
-    // (e.g. "Article Prevalence" -> rejected, "China Study" -> rejected)
-    if (isStopWord(words[0]) || isStopWord(words[words.length - 1])) {
-      continue;
-    }
+    // Format term with proper acronym and title casing
+    const formattedTerm = words.map(formatTopicWord).join(' ');
 
-    // Rule 3: Single words that are standalone relational adjectives (e.g. "Environmental") rejected
-    if (words.length === 1 && STOP_WORDS.has(words[0].toLowerCase())) {
-      continue;
-    }
-
-    // Clean up title casing for phrase (e.g. "CPE strains" -> "CPE Strains")
-    const formattedTerm = words
-      .map((w) => {
-        if (/^[A-Z]{2,6}$/.test(w)) return w;
-        return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-      })
-      .join(' ');
-
-    // Canonical root grouping (groups 'Antibiotic' and 'Antibiotics' into the same entry)
+    // Canonical root grouping (groups 'Antibiotic' and 'Antibiotics', 'VIM-1' and 'VIM-1 Gene')
     const canonicalKey = getCanonicalRoot(formattedTerm);
 
     // Count occurrences in document
@@ -142,36 +160,26 @@ export function mockExtractTopics(rawText: string): TopicExtractionResult {
     if (formattedTerm.length > 8) score *= 1.3;
     if (words.length > 1) score *= 1.6;
 
-    // Acronym bonus (CPE, MDR, AMR are typically critical core subjects)
-    if (/^[A-Z]{2,6}/.test(words[0])) {
+    // Acronym bonus (VIM-1, CPE, MDR are typically critical core subjects)
+    if (/^[A-Z]{2,6}/.test(words[0]) || /^bla[A-Z]{2,6}/i.test(words[0])) {
       score *= 2.0;
     }
 
     // Domain keyword co-occurrence bonus
-    const lowerTerm = formattedTerm.toLowerCase();
     const hasDomainKeyword = words.some((w) => DOMAIN_INDICATORS.has(w.toLowerCase()));
     if (hasDomainKeyword) {
       score *= 2.2;
-    }
-
-    // Check if term co-occurs with domain indicators in surrounding text
-    const termIndex = cleaned.toLowerCase().indexOf(lowerTerm);
-    if (termIndex !== -1) {
-      const windowText = cleaned.slice(Math.max(0, termIndex - 100), termIndex + 100).toLowerCase();
-      for (const indicator of DOMAIN_INDICATORS) {
-        if (windowText.includes(indicator)) {
-          score *= 1.3;
-          break;
-        }
-      }
     }
 
     const existing = candidateScores.get(canonicalKey);
     if (existing) {
       existing.count += count;
       existing.score += score;
-      // Prefer longer, more specific multi-word form (e.g. 'CPE Strains' over 'CPE')
-      if (formattedTerm.length > existing.term.length || count > existing.count) {
+      // Prefer the cleaner / canonical root name if count is equal or greater
+      const isRootAcronym = /^[A-Z]{2,6}(?:-[A-Za-z0-9]+)?$/.test(formattedTerm);
+      if (isRootAcronym || formattedTerm.toLowerCase() === canonicalKey) {
+        existing.term = formattedTerm;
+      } else if (count > existing.count) {
         existing.term = formattedTerm;
       }
     } else {

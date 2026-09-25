@@ -4,8 +4,24 @@
  */
 
 export function getCanonicalRoot(term: string): string {
-  const lower = term.toLowerCase().trim();
+  let lower = term.toLowerCase().trim();
+  // Strip leading beta-lactamase gene prefix (blaVIM-1 -> vim-1)
+  lower = lower.replace(/^bla(?=[a-z]{2,6})/i, '');
+
   const words = lower.split(/\s+/);
+  // Strip leading taxonomy rank words (e.g. serovar Infantis -> infantis)
+  if (words.length > 1 && ['serovar', 'serovars', 'genus', 'species'].includes(words[0])) {
+    words.shift();
+  }
+
+  // Strip trailing generic technical qualifiers: gene, genes, strain, strains, isolate, isolates
+  if (words.length > 1) {
+    const lastWord = words[words.length - 1];
+    if (['gene', 'genes', 'strain', 'strains', 'isolate', 'isolates', 'carrier', 'carriers'].includes(lastWord)) {
+      words.pop();
+    }
+  }
+
   const last = words[words.length - 1];
   let rootLast = last;
 
@@ -53,6 +69,13 @@ export function getTopicVariants(topic: string): string[] {
   } else if (!lastWord.endsWith('s')) {
     variants.add(makeVariant(lastWord + 's'));
     variants.add(makeVariant(lastWord + 'es'));
+  }
+
+  // If topic is an acronym or gene (e.g. VIM-1, CPE), also support variants for wikilinking
+  if (/^[A-Z]{2,6}(?:-[A-Za-z0-9]+)?$/.test(cleaned)) {
+    variants.add(`${cleaned} gene`);
+    variants.add(`${cleaned} genes`);
+    variants.add(`bla${cleaned}`);
   }
 
   return Array.from(variants);

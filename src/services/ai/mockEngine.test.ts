@@ -99,5 +99,29 @@ Surveillance of CPE strains across food animal production is urgently needed.
     expect(answer).toContain('do not contain detailed laboratory isolation protocols or procedures');
     expect(answer).toContain('Recommendation');
   });
+
+  it('correctly extracts VIM-1 and Salmonella enterica without verb fragments like "Vim-1 Gene Was"', () => {
+    const text = `
+Detection of VIM-1-Producing Salmonella enterica Serovars Infantis and Goldcoast at a Breeding Pig Farm in Germany in 2017 and Their Molecular Relationship to Former VIM-1-Producing German Livestock Production.
+In this study, the blaVIM-1 gene was detected in Salmonella enterica serovars Infantis and Goldcoast.
+The VIM-1 gene was located on an IncHI2 plasmid conferring carbapenem resistance.
+The VIM-1 gene were investigated in livestock production and isolates were characterized.
+`;
+    const result = mockExtractTopics(text);
+    const names = result.topics.map((t) => t.name);
+
+    // Must NOT contain verb phrases
+    expect(names).not.toContain('Vim-1 Gene Was');
+    expect(names).not.toContain('Vim-1 Gene Were');
+    expect(names.some(n => /\b(was|were|is|are)\b/i.test(n))).toBe(false);
+
+    // Must extract VIM-1 with proper uppercase acronym casing (not "Vim-1")
+    expect(names).toContain('VIM-1');
+
+    // Must extract Salmonella enterica
+    const hasSalmonella = names.some(n => n.toLowerCase().includes('salmonella'));
+    expect(hasSalmonella).toBe(true);
+  });
 });
+
 
