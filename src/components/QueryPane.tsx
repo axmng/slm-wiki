@@ -5,6 +5,9 @@ import { marked } from 'marked';
 
 interface QueryPaneProps {
   onOpenPage: (pageName: string) => void;
+  engine?: string;
+  modelId?: string;
+  onSwitchToWebGPU?: () => void;
 }
 
 const SAMPLE_QUESTIONS = [
@@ -14,7 +17,12 @@ const SAMPLE_QUESTIONS = [
   'What is neuromorphic computing and spiking neural networks?',
 ];
 
-export const QueryPane: React.FC<QueryPaneProps> = ({ onOpenPage }) => {
+export const QueryPane: React.FC<QueryPaneProps> = ({
+  onOpenPage,
+  engine = 'mock-dev',
+  modelId = 'Qwen2.5-0.5B',
+  onSwitchToWebGPU,
+}) => {
   const [query, setQuery] = useState('');
   const [isQuerying, setIsQuerying] = useState(false);
   const [pass1Data, setPass1Data] = useState<{ files: string[]; reasoning: string } | null>(null);
@@ -81,6 +89,35 @@ export const QueryPane: React.FC<QueryPaneProps> = ({ onOpenPage }) => {
           <p className="text-sm text-slate-400 mt-1">
             Pass 1 scans <code className="text-cyan-300">INDEX.md</code> to select relevant files, then Pass 2 synthesizes grounded answers strictly from those notes.
           </p>
+        </div>
+
+        {/* Engine Transparency Pill */}
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 bg-slate-950/70 border border-slate-800/80 rounded-xl px-3.5 py-2 text-xs">
+          <div className="flex items-center gap-2">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                engine === 'mock-dev' ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'
+              }`}
+            />
+            <span className="text-slate-400">Engine:</span>
+            <span className="font-medium text-slate-200">
+              {engine === 'mock-dev'
+                ? 'Simulated Dev SLM (Heuristic)'
+                : engine === 'ollama'
+                ? 'Local Ollama'
+                : `WebGPU Neural SLM (${modelId.split('-')[0]})`}
+            </span>
+          </div>
+
+          {engine === 'mock-dev' && onSwitchToWebGPU && (
+            <button
+              onClick={onSwitchToWebGPU}
+              className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-medium underline underline-offset-2 hover:no-underline transition-colors cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Switch to Real In-Browser WebGPU SLM (~350MB)</span>
+            </button>
+          )}
         </div>
 
         {/* Query Input */}

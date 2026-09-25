@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
-import { FolderOpen, Cpu, CheckCircle2, BookMarked, Plus } from 'lucide-react';
+import { FolderOpen, Cpu, CheckCircle2, BookMarked, Plus, Loader2 } from 'lucide-react';
 import { VaultStats } from '../services/vault/types';
-import { ModelEngineType } from '../services/ai/aiTypes';
+import { ModelEngineType, WEBLLM_PRESETS, InitProgressEvent } from '../services/ai/aiTypes';
 
 interface HeaderProps {
   stats: VaultStats;
   engine: ModelEngineType;
   modelId: string;
+  loadingProgress?: InitProgressEvent | null;
   onMountVault: () => void;
-  onToggleEngine: (newEngine: ModelEngineType) => void;
+  onSelectEngine: (newEngine: ModelEngineType, modelId?: string) => void;
   onSelectWiki: (wikiName: string) => void;
   onCreateWiki: (wikiName: string) => void;
   activeTab: 'query' | 'ingest' | 'notes';
@@ -19,8 +20,9 @@ export const Header: React.FC<HeaderProps> = ({
   stats,
   engine,
   modelId,
+  loadingProgress,
   onMountVault,
-  onToggleEngine,
+  onSelectEngine,
   onSelectWiki,
   onCreateWiki,
   activeTab,
@@ -38,9 +40,27 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
+  const handleEngineChange = (val: string) => {
+    if (val === 'mock-dev') {
+      onSelectEngine('mock-dev');
+    } else if (val === 'ollama') {
+      onSelectEngine('ollama');
+    } else if (val.startsWith('webllm:')) {
+      const selectedModel = val.replace('webllm:', '');
+      onSelectEngine('webllm-webgpu', selectedModel);
+    }
+  };
+
+  const currentSelectValue =
+    engine === 'mock-dev'
+      ? 'mock-dev'
+      : engine === 'ollama'
+      ? 'ollama'
+      : `webllm:${modelId}`;
+
   return (
-    <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50 px-6 py-3.5">
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50">
+      <div className="max-w-7xl mx-auto px-6 py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4">
         {/* Brand & Active Wiki Indicator */}
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-950/50">
@@ -49,8 +69,8 @@ export const Header: React.FC<HeaderProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-lg text-white tracking-tight">SLM Wiki</h1>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-400 border border-cyan-800 font-mono">
-                LiteRT-LM
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-400 border border-cyan-800 font-mono">
+                {engine === 'mock-dev' ? 'Simulated Dev SLM' : engine === 'ollama' ? 'Local Ollama' : 'WebGPU SLM'}
               </span>
             </div>
             
@@ -159,16 +179,27 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs">
             <Cpu className="w-3.5 h-3.5 text-cyan-400" />
             <select
-              value={engine}
-              onChange={(e) => onToggleEngine(e.target.value as ModelEngineType)}
-              className="bg-transparent text-slate-200 focus:outline-none cursor-pointer"
+              value={currentSelectValue}
+              onChange={(e) => handleEngineChange(e.target.value)}
+              className="bg-transparent text-slate-200 focus:outline-none cursor-pointer max-w-[210px] truncate"
             >
-              <option value="mock-dev" className="bg-slate-900 text-slate-200">
-                Mock SLM (Instant Dev)
-              </option>
-              <option value="litert-webgpu" className="bg-slate-900 text-slate-200">
-                LiteRT-LM WebGPU ({modelId})
-              </option>
+              <optgroup label="Simulated Dev Engine">
+                <option value="mock-dev" className="bg-slate-900 text-slate-200">
+                  Simulated Dev SLM (Instant / Heuristic)
+                </option>
+              </optgroup>
+              <optgroup label="In-Browser WebGPU SLMs (MLC WebLLM)">
+                {WEBLLM_PRESETS.map((p) => (
+                  <option key={p.id} value={`webllm:${p.id}`} className="bg-slate-900 text-slate-200">
+                    {p.name}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Local Server">
+                <option value="ollama" className="bg-slate-900 text-slate-200">
+                  Local Ollama (localhost:11434)
+                </option>
+              </optgroup>
             </select>
           </div>
 
@@ -200,6 +231,25 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Model Download & Compilation Progress Banner */}
+      {loadingProgress && loadingProgress.stage !== 'ready' && (
+        <div className="bg-indigo-950/90 border-t border-indigo-800/60 px-6 py-2 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-indigo-200">
+          <div className="flex items-center gap-2.5 truncate">
+            <Loader2 className="w-4 h-4 animate-spin text-cyan-400 shrink-0" />
+            <span className="truncate">{loadingProgress.detail}</span>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="w-36 bg-slate-900 rounded-full h-2 overflow-hidden border border-indigo-700/50">
+              <div
+                className="bg-gradient-to-r from-cyan-400 to-indigo-500 h-full transition-all duration-300"
+                style={{ width: `${loadingProgress.progress}%` }}
+              />
+            </div>
+            <span className="font-mono text-xs text-cyan-300 font-semibold">{loadingProgress.progress}%</span>
+          </div>
+        </div>
+      )}
     </header>
   );
 };

@@ -6,7 +6,7 @@ import { NoteViewer } from './components/NoteViewer';
 import { vault } from './services/vault/vaultService';
 import { aiService } from './services/ai/aiService';
 import { VaultStats } from './services/vault/types';
-import { ModelEngineType } from './services/ai/aiTypes';
+import { ModelEngineType, InitProgressEvent } from './services/ai/aiTypes';
 import { Info, FolderCheck, Cpu, BookMarked } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -21,7 +21,8 @@ export const App: React.FC = () => {
     availableWikis: ['Default'],
   });
   const [engine, setEngine] = useState<ModelEngineType>('mock-dev');
-  const modelId = 'gemma-2b-it';
+  const [modelId, setModelId] = useState<string>('Qwen2.5-0.5B-Instruct-q4f16_1-MLC');
+  const [loadingProgress, setLoadingProgress] = useState<InitProgressEvent | null>(null);
 
   const refreshStats = async () => {
     const s = await vault.getStats();
@@ -30,7 +31,7 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     refreshStats();
-    aiService.initModel({ engine: 'mock-dev' });
+    aiService.initModel({ engine: 'mock-dev', modelId });
   }, []);
 
   const handleMountVault = async () => {
@@ -38,12 +39,41 @@ export const App: React.FC = () => {
     setStats(s);
   };
 
-  const handleToggleEngine = async (newEngine: ModelEngineType) => {
+  const handleSelectEngine = async (newEngine: ModelEngineType, newModelId?: string) => {
     setEngine(newEngine);
+    if (newModelId) setModelId(newModelId);
+
     try {
-      await aiService.switchEngine(newEngine);
-    } catch (err) {
+      setLoadingProgress({
+        stage: 'downloading',
+        progress: 10,
+        detail:
+          newEngine === 'mock-dev'
+            ? 'Activating fast simulated engine...'
+            : newEngine === 'ollama'
+            ? 'Connecting to local Ollama (localhost:11434)...'
+            : `Preparing ${newModelId || modelId}...`,
+      });
+
+      await aiService.switchEngine(
+        newEngine,
+        newModelId || modelId,
+        undefined,
+        (progress) => {
+          setLoadingProgress(progress);
+        }
+      );
+    } catch (err: any) {
       console.error('Error switching engine:', err);
+      setLoadingProgress({
+        stage: 'error',
+        progress: 0,
+        detail: `Engine error: ${err.message || err}. Reverting to Simulated Dev SLM.`,
+      });
+      setTimeout(() => {
+        setEngine('mock-dev');
+        setLoadingProgress(null);
+      }, 4000);
     }
   };
 
@@ -80,8 +110,9 @@ export const App: React.FC = () => {
         stats={stats}
         engine={engine}
         modelId={modelId}
+        loadingProgress={loadingProgress}
         onMountVault={handleMountVault}
-        onToggleEngine={handleToggleEngine}
+        onSelectEngine={handleSelectEngine}
         onSelectWiki={handleSelectWiki}
         onCreateWiki={handleCreateWiki}
         activeTab={activeTab}
@@ -91,7 +122,12 @@ export const App: React.FC = () => {
       {/* Main Workspace Body */}
       <main className="flex-1 px-4 md:px-6">
         {activeTab === 'query' && (
-          <QueryPane onOpenPage={handleOpenPage} />
+          <QueryPane
+            onOpenPage={handleOpenPage}
+            engine={engine}
+            modelId={modelId}
+            onSwitchToWebGPU={() => handleSelectEngine('webllm-webgpu', 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC')}
+          />
         )}
 
         {activeTab === 'ingest' && (
@@ -137,9 +173,13 @@ export const App: React.FC = () => {
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5">
             <Cpu className="w-3.5 h-3.5 text-cyan-400" />
-            <span>SLM Worker:</span>
+            <span>SLM Engine:</span>
             <span className="text-slate-300 font-mono">
-              {engine === 'mock-dev' ? 'Dev Mock Engine' : `LiteRT-LM WebGPU (${modelId})`}
+              {engine === 'mock-dev'
+                ? 'Simulated Dev SLM'
+                : engine === 'ollama'
+                ? 'Local Ollama'
+                : `WebGPU (${modelId.split('-')[0]})`}
             </span>
           </span>
           <span className="hidden sm:inline text-slate-600">|</span>

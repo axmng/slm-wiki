@@ -13,13 +13,53 @@ export interface RoutingResult {
   reasoning: string;
 }
 
-export type ModelEngineType = 'litert-webgpu' | 'mock-dev';
+export type ModelEngineType = 'webllm-webgpu' | 'litert-webgpu' | 'mock-dev' | 'ollama';
+
+export interface ModelPreset {
+  id: string;
+  name: string;
+  description: string;
+  vramMB: number;
+  downloadSizeApprox: string;
+}
+
+export const WEBLLM_PRESETS: ModelPreset[] = [
+  {
+    id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+    name: 'Qwen2.5 0.5B (Fast WebGPU)',
+    description: 'Ultra-lightweight, fast WebGPU inference in browser (~350MB download)',
+    vramMB: 945,
+    downloadSizeApprox: '~350MB',
+  },
+  {
+    id: 'SmolLM2-1.7B-Instruct-q4f16_1-MLC',
+    name: 'SmolLM2 1.7B (High Quality)',
+    description: 'Balanced performance and depth for knowledge synthesis (~1GB download)',
+    vramMB: 1774,
+    downloadSizeApprox: '~1GB',
+  },
+  {
+    id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
+    name: 'Llama 3.2 1B (Meta)',
+    description: 'Compact Meta instruction-tuned SLM (~800MB download)',
+    vramMB: 879,
+    downloadSizeApprox: '~800MB',
+  },
+  {
+    id: 'gemma-2-2b-it-q4f16_1-MLC',
+    name: 'Gemma 2 2B (Google)',
+    description: 'Google Gemma 2 architecture for structured reasoning (~1.4GB download)',
+    vramMB: 1895,
+    downloadSizeApprox: '~1.4GB',
+  },
+];
 
 export interface ModelConfig {
   engine: ModelEngineType;
   modelId: string;
   modelUrl?: string;
   contextWindow: number;
+  ollamaEndpoint?: string;
 }
 
 export interface InitProgressEvent {

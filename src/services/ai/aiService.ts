@@ -18,7 +18,7 @@ export class AIService {
   private worker: Worker | null = null;
   private currentConfig: ModelConfig = {
     engine: 'mock-dev',
-    modelId: 'gemma-2b-it',
+    modelId: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
     contextWindow: 4096,
   };
   private ready = false;
@@ -127,9 +127,16 @@ export class AIService {
     return this.currentConfig;
   }
 
-  public async switchEngine(engine: ModelEngineType): Promise<void> {
+  public async switchEngine(
+    engine: ModelEngineType,
+    modelId?: string,
+    ollamaEndpoint?: string,
+    onProgress?: (event: InitProgressEvent) => void
+  ): Promise<void> {
     this.currentConfig.engine = engine;
-    await this.initModel(this.currentConfig);
+    if (modelId) this.currentConfig.modelId = modelId;
+    if (ollamaEndpoint) this.currentConfig.ollamaEndpoint = ollamaEndpoint;
+    await this.initModel(this.currentConfig, onProgress || this.progressCallback);
   }
 
   public async extractTopics(text: string): Promise<TopicExtractionResult> {

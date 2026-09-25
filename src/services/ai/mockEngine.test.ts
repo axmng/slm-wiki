@@ -53,4 +53,51 @@ Overuse of Antibiotics accelerates the emergence of multidrug-resistant pathogen
     expect(note).not.toContain('Automatic knowledge note synthesized on');
     expect(note).not.toContain('represents a key conceptual node');
   });
+
+  it('correctly discovers acronym concepts (CPE Strains) and rejects geographic names and standalone adjectives', () => {
+    const text = `
+Antibiotics 2019, 8, 23 8 of 18
+Resistance to this AB in poultry farming have been reported, for example from Canada, China, Brazil and India.
+Similar results were published from China with over 60% for TET and CHL and no resistances to carbapenem (IMP).
+The association among the resistance phenotypes ampicillin–doxycycline–TET–SXT was reported as the predominant in poultry and swine production in China.
+Environmental dissemination of Carbapenemase-producing Enterobacteriaceae (CPE) strains poses severe global health risks.
+CPE strains harbor mobile plasmid genes that confer resistance to last-line carbapenems.
+Surveillance of CPE strains across food animal production is urgently needed.
+`;
+
+    const result = mockExtractTopics(text);
+    const names = result.topics.map((t) => t.name.toLowerCase());
+
+    // Must NOT extract countries or standalone adjectives
+    expect(names).not.toContain('china');
+    expect(names).not.toContain('canada');
+    expect(names).not.toContain('brazil');
+    expect(names).not.toContain('india');
+    expect(names).not.toContain('environmental');
+
+    // Must extract CPE Strains or CPE
+    const hasCpe = names.some((n) => n.includes('cpe'));
+    expect(hasCpe).toBe(true);
+  });
+
+  it('synthesizes honest grounded answers when specific procedures are absent from notes', async () => {
+    const { mockSynthesizeAnswer } = await import('./mockEngine');
+    const notes = [
+      {
+        filename: 'CPE Strains.md',
+        content: `
+# CPE Strains
+> **Executive Summary**: CPE strains harbor mobile plasmid genes that confer resistance to last-line carbapenems.
+- **Key Characteristics**: Surveillance of CPE strains across food animal production is urgently needed.
+- **Prevalence**: Similar results were published from China with over 60% for TET and CHL.
+`,
+      },
+    ];
+
+    const answer = await mockSynthesizeAnswer('what isolation procedures for CPE strains exist?', notes);
+    expect(answer).toContain('Notice');
+    expect(answer).toContain('do not contain detailed laboratory isolation protocols or procedures');
+    expect(answer).toContain('Recommendation');
+  });
 });
+
