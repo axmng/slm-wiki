@@ -32,6 +32,16 @@ function post(msg: WorkerResponse) {
 // 1. GEMMA 4 (ONNX Runtime Web / Transformers.js WebGPU)
 // --------------------------------------------------------------------------
 
+// Strip Gemma 4 thinking channel and special tokens
+function stripGemmaTokens(text: string): string {
+  return text
+    .replace(/<\|channel\>thought[\s\S]*?<channel\|>/gi, '')
+    .replace(/<\|channel\>thought[\s\S]*$/gi, '')
+    .replace(/<turn\|>[\s\S]*$/gi, '')
+    .replace(/<eos>[\s\S]*$/gi, '')
+    .trim();
+}
+
 async function initGemma4(config: ModelConfig, id: string) {
   post({
     type: 'PROGRESS',
@@ -48,7 +58,8 @@ async function initGemma4(config: ModelConfig, id: string) {
   }
 
   try {
-    const { AutoTokenizer, AutoModelForCausalLM } = await import('@huggingface/transformers');
+    const { AutoTokenizer, AutoProcessor, AutoModelForCausalLM, Gemma4ForConditionalGeneration } =
+      await import('@huggingface/transformers');
     const modelId = config.modelId || 'onnx-community/gemma-4-E2B-it-ONNX';
 
     post({
@@ -61,7 +72,12 @@ async function initGemma4(config: ModelConfig, id: string) {
       id,
     });
 
-    gemmaTokenizer = await AutoTokenizer.from_pretrained(modelId);
+    try {
+      gemmaTokenizer = await AutoTokenizer.from_pretrained(modelId);
+    } catch {
+      const proc = await AutoProcessor.from_pretrained(modelId);
+      gemmaTokenizer = proc.tokenizer || proc;
+    }
 
     post({
       type: 'PROGRESS',
@@ -73,7 +89,9 @@ async function initGemma4(config: ModelConfig, id: string) {
       id,
     });
 
-    gemmaModel = await AutoModelForCausalLM.from_pretrained(modelId, {
+    // Gemma4ForCausalLM or AutoModelForCausalLM loads in text-only mode (skips unnecessary vision/audio weights)
+    const ModelClass = AutoModelForCausalLM || Gemma4ForConditionalGeneration;
+    gemmaModel = await ModelClass.from_pretrained(modelId, {
       dtype: {
         embed_tokens: 'q4f16',
         decoder_model_merged: 'q4f16',
@@ -114,31 +132,88 @@ async function initGemma4(config: ModelConfig, id: string) {
 async function generateGemma4(
   prompt: string,
   systemPrompt?: string,
-  onChunk?: (chunk: string) => void
+  onChunk?: (chunk: string) => void,
+  maxNewTokens = 350
 ): Promise<string> {
-  const { TextStreamer } = await import('@huggingface/transformers');
-  const fullPrompt = systemPrompt
-    ? `<start_of_turn>system\n${systemPrompt}<end_of_turn>\n<start_of_turn>user\n${prompt}<end_of_turn>\n<start_of_turn>model\n`
-    : `<start_of_turn>user\n${prompt}<end_of_turn>\n<start_of_turn>model\n`;
+  const { TextStreamer, InterruptableStoppingCriteria } = await import('@huggingface/transformers');
+
+  // Format with Gemma 4 chat template (<bos><|turn>system\n...<turn|>\n<|turn>user\n...<turn|>\n<|turn>model\n)
+  const messages: { role: string; content: string }[] = [];
+  if (systemPrompt) {
+    messages.push({ role: 'system', content: systemPrompt });
+  }
+  messages.push({ role: 'user', content: prompt });
+
+  let fullPrompt = '';
+  try {
+    if (gemmaTokenizer?.apply_chat_template) {
+      fullPrompt = gemmaTokenizer.apply_chat_template(messages, {
+        tokenize: false,
+        add_generation_prompt: true,
+        enable_thinking: false,
+      });
+    }
+  } catch {
+    // fallback template
+  }
+
+  if (!fullPrompt) {
+    fullPrompt = '<bos>';
+    if (systemPrompt) {
+      fullPrompt += `<|turn>system\n${systemPrompt.trim()}<turn|>\n`;
+    }
+    fullPrompt += `<|turn>user\n${prompt.trim()}<turn|>\n<|turn>model\n`;
+  }
 
   const inputs = await gemmaTokenizer(fullPrompt);
   let full = '';
+  let hitStop = false;
+
+  const stoppingCriteria = new InterruptableStoppingCriteria();
 
   const streamer = new TextStreamer(gemmaTokenizer, {
     skip_prompt: true,
     callback_function: (chunk: string) => {
+      if (hitStop) return;
       full += chunk;
-      onChunk?.(chunk);
+
+      // Early stop if model produces turn end delimiter
+      if (full.includes('<turn|>') || full.includes('<eos>')) {
+        hitStop = true;
+        stoppingCriteria.interrupt();
+        return;
+      }
+
+      // Filter out any thinking tokens from streaming
+      if (!full.includes('<|channel>thought') || full.includes('<channel|>')) {
+        const cleanChunk = chunk.replace(/<\|channel\>thought[\s\S]*?<channel\|>/g, '').replace(/<turn\|>|<eos>/g, '');
+        if (cleanChunk) {
+          onChunk?.(cleanChunk);
+        }
+      }
     },
   });
 
-  await gemmaModel.generate({
-    ...inputs,
-    max_new_tokens: 1024,
-    streamer,
-  });
+  // Safety timer to prevent any infinite generation loops
+  const timer = setTimeout(() => {
+    stoppingCriteria.interrupt();
+  }, 35000);
 
-  return full;
+  try {
+    await gemmaModel.generate({
+      ...inputs,
+      max_new_tokens: maxNewTokens,
+      eos_token_id: [1, 106],
+      streamer,
+      stopping_criteria: [stoppingCriteria],
+    });
+  } catch (err: any) {
+    console.warn('Gemma 4 generation interrupted or stopped:', err.message || err);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  return stripGemmaTokens(full);
 }
 
 // --------------------------------------------------------------------------
@@ -210,7 +285,8 @@ async function initBonsai27B(config: ModelConfig, id: string) {
 async function generateBonsai27B(
   prompt: string,
   systemPrompt?: string,
-  onChunk?: (chunk: string) => void
+  onChunk?: (chunk: string) => void,
+  maxNewTokens = 350
 ): Promise<string> {
   if (!bonsaiSession) throw new Error('Bonsai 27B session not initialized');
 
@@ -220,7 +296,7 @@ async function generateBonsai27B(
   }
   messages.push({ role: 'user', content: prompt });
 
-  const stream = bonsaiSession.generate(messages, { maxNewTokens: 1024 });
+  const stream = bonsaiSession.generate(messages, { maxNewTokens });
   let full = '';
 
   for await (const tok of stream) {
@@ -240,14 +316,15 @@ async function generateBonsai27B(
 async function runNeuralGeneration(
   prompt: string,
   systemPrompt?: string,
-  onChunk?: (chunk: string) => void
+  onChunk?: (chunk: string) => void,
+  maxNewTokens = 350
 ): Promise<string> {
   if (currentConfig.engine === 'gemma4-webgpu' && gemmaModel) {
-    return await generateGemma4(prompt, systemPrompt, onChunk);
+    return await generateGemma4(prompt, systemPrompt, onChunk, maxNewTokens);
   }
 
   if (currentConfig.engine === 'bonsai-webgpu' && bonsaiSession) {
-    return await generateBonsai27B(prompt, systemPrompt, onChunk);
+    return await generateBonsai27B(prompt, systemPrompt, onChunk, maxNewTokens);
   }
 
   throw new Error(`No active WebGPU model session loaded for ${currentConfig.engine}`);
@@ -302,7 +379,8 @@ STRICT RULES:
 
           const prompt = `Analyze this text and extract topics:\n\n${req.text.slice(0, 3000)}\n\nJSON:`;
           try {
-            const raw = await runNeuralGeneration(prompt, system);
+            // Topic extraction only needs ~220 tokens max
+            const raw = await runNeuralGeneration(prompt, system, undefined, 220);
             const jsonMatch = raw.match(/\{[\s\S]*\}/);
             const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
             if (Array.isArray(parsed.topics) && parsed.topics.length > 0) {
@@ -344,7 +422,8 @@ STRICT RULES:
 Output only the Markdown text with no conversational preamble:`;
 
           try {
-            const note = await runNeuralGeneration(prompt, system);
+            // Markdown note generation needs ~450 tokens
+            const note = await runNeuralGeneration(prompt, system, undefined, 450);
             post({ type: 'RESULT', data: note.trim(), id });
           } catch {
             post({ type: 'RESULT', data: mockGenerateNote(req.topic, req.facts, req.existingContent), id });
@@ -373,7 +452,8 @@ Output strictly JSON:
 {"selectedFilenames": ["filename1.md"], "reasoning": "brief explanation"}`;
 
           try {
-            const raw = await runNeuralGeneration(prompt, system);
+            // Routing selection only needs ~120 tokens
+            const raw = await runNeuralGeneration(prompt, system, undefined, 120);
             const jsonMatch = raw.match(/\{[\s\S]*\}/);
             const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
             post({ type: 'RESULT', data: parsed, id });
@@ -407,7 +487,7 @@ Answer:`;
           try {
             await runNeuralGeneration(prompt, system, (chunk) => {
               post({ type: 'STREAM_CHUNK', chunk, id });
-            });
+            }, 600);
             post({ type: 'STREAM_DONE', id });
           } catch (err: any) {
             post({

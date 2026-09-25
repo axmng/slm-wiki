@@ -2,6 +2,7 @@ import { vault } from '../vault/vaultService';
 import { aiService } from '../ai/aiService';
 import { ExtractedTopic } from '../ai/aiTypes';
 import { areTopicsEquivalent, getTopicVariants } from '../utils/textNormalization';
+import { mockExtractTopics } from '../ai/mockEngine';
 
 export type IngestionStage =
   | 'idle'
@@ -78,19 +79,39 @@ export class IngestionPipeline {
 
       const rawFilename = await vault.saveRaw(title, rawText);
 
-      // 2. Chunk text and extract topics
+      // 2. Extract topics with representative sampling
       onProgress?.({
         stage: 'extracting_topics',
-        message: 'Analyzing concepts and topics with local SLM...',
-        percent: 30,
+        message: 'Analyzing core concepts and topics with local SLM...',
+        percent: 25,
       });
 
-      const chunks = this.chunkText(rawText);
       const topicMap = new Map<string, ExtractedTopic>();
 
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const res = await aiService.extractTopics(chunk);
+      // Representative analysis:
+      // In academic/technical papers and docs, the primary concepts are in the first 3500 chars.
+      // If the document is long (> 6500 chars), take the introductory segment and a middle segment.
+      const extractionSamples: string[] = [];
+      if (rawText.length <= 4000) {
+        extractionSamples.push(rawText);
+      } else {
+        extractionSamples.push(rawText.slice(0, 3500));
+        if (rawText.length > 7000) {
+          const midStart = Math.floor(rawText.length * 0.35);
+          extractionSamples.push(rawText.slice(midStart, midStart + 3000));
+        }
+      }
+
+      for (let i = 0; i < extractionSamples.length; i++) {
+        const sample = extractionSamples[i];
+        if (extractionSamples.length > 1) {
+          onProgress?.({
+            stage: 'extracting_topics',
+            message: `Analyzing concepts with local SLM (Pass ${i + 1}/${extractionSamples.length})...`,
+            percent: 25 + i * 15,
+          });
+        }
+        const res = await aiService.extractTopics(sample);
         for (const t of res.topics) {
           const normName = t.name.trim();
           if (!normName) continue;
@@ -117,27 +138,42 @@ export class IngestionPipeline {
         }
       }
 
-      const allTopics = Array.from(topicMap.values());
+      // If neural SLM extracted no topics, guarantee high-quality heuristic extraction
+      if (topicMap.size === 0) {
+        const fallback = mockExtractTopics(rawText);
+        for (const t of fallback.topics) {
+          topicMap.set(t.name, t);
+        }
+      }
+
+      // Limit to top 4 most prominent topics per document for clean wiki curation
+      const allTopics = Array.from(topicMap.values()).slice(0, 4);
 
       onProgress?.({
         stage: 'extracting_topics',
-        message: `Extracted ${allTopics.length} topic nodes.`,
-        percent: 50,
+        message: `Extracted ${allTopics.length} topic nodes: ${allTopics.map(t => `[[${t.name}]]`).join(', ')}`,
+        percent: 45,
         extractedTopics: allTopics,
       });
 
       // 3. Update or create pages sequentially
-      onProgress?.({
-        stage: 'updating_pages',
-        message: 'Integrating facts and generating Markdown notes...',
-        percent: 60,
-      });
-
       const updatedPages: string[] = [];
       const allKnownPageNames = await vault.listPages();
 
       for (let i = 0; i < allTopics.length; i++) {
         const topic = allTopics[i];
+        const currentNum = i + 1;
+        const total = allTopics.length;
+        const progressPercent = 45 + Math.round((currentNum / total) * 45);
+
+        onProgress?.({
+          stage: 'updating_pages',
+          message: `Synthesizing Markdown note (${currentNum}/${total}): [[${topic.name}]]...`,
+          percent: progressPercent,
+          extractedTopics: allTopics,
+          updatedFiles: updatedPages,
+        });
+
         const matchedPageName = await vault.findExistingPageName(topic.name);
         const canonicalTopicName = matchedPageName || topic.name;
 
@@ -156,14 +192,6 @@ export class IngestionPipeline {
         if (!updatedPages.includes(savedPage.filename)) {
           updatedPages.push(savedPage.filename);
         }
-
-        const progressPercent = 60 + Math.round(((i + 1) / allTopics.length) * 25);
-        onProgress?.({
-          stage: 'updating_pages',
-          message: `Updated note: ${savedPage.filename}`,
-          percent: progressPercent,
-          updatedFiles: updatedPages,
-        });
       }
 
       // 4. Update INDEX.md deterministically

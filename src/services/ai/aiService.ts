@@ -28,6 +28,8 @@ export class AIService {
       resolve: (data: any) => void;
       reject: (err: any) => void;
       onChunk?: (chunk: string) => void;
+      timer?: any;
+      payload?: WorkerRequestPayload;
     }
   >();
   private progressCallback?: (event: InitProgressEvent) => void;
@@ -59,14 +61,22 @@ export class AIService {
         if (type === 'STREAM_CHUNK') {
           handler.onChunk?.(msg.chunk);
         } else if (type === 'STREAM_DONE') {
+          if (handler.timer) clearTimeout(handler.timer);
           this.pendingRequests.delete(id);
           handler.resolve(null);
         } else if (type === 'RESULT') {
+          if (handler.timer) clearTimeout(handler.timer);
           this.pendingRequests.delete(id);
           handler.resolve(msg.data);
         } else if (type === 'ERROR') {
+          if (handler.timer) clearTimeout(handler.timer);
           this.pendingRequests.delete(id);
-          handler.reject(new Error(msg.error));
+          if (handler.payload && handler.payload.type !== 'INIT') {
+            console.warn(`Worker error on ${handler.payload.type}: ${msg.error}. Falling back to inline heuristic.`);
+            this.executeInline(handler.payload, handler.onChunk).then(handler.resolve).catch(handler.reject);
+          } else {
+            handler.reject(new Error(msg.error));
+          }
         }
       };
     } catch {
@@ -82,8 +92,19 @@ export class AIService {
     }
 
     const id = Math.random().toString(36).slice(2, 10);
+    // 180s for INIT model downloading; 40s safety timeout for generation passes
+    const timeoutMs = payload.type === 'INIT' ? 180000 : 40000;
+
     return new Promise<T>((resolve, reject) => {
-      this.pendingRequests.set(id, { resolve, reject, onChunk });
+      const timer = setTimeout(() => {
+        if (this.pendingRequests.has(id)) {
+          console.warn(`Request ${payload.type} (${id}) timed out after ${timeoutMs}ms. Falling back to inline heuristic.`);
+          this.pendingRequests.delete(id);
+          this.executeInline<T>(payload, onChunk).then(resolve).catch(reject);
+        }
+      }, timeoutMs);
+
+      this.pendingRequests.set(id, { resolve, reject, onChunk, timer, payload });
       this.worker?.postMessage({ ...payload, id });
     });
   }
